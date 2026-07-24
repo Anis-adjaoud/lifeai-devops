@@ -43,9 +43,12 @@ class ActivityAgent(BaseAgent):
         calories       = data.get("calories_burned", 0)
 
         # ── Calcul du score (0-100) ────────────────────────────────────────
-        s_steps    = min(steps_today / self.STEPS_GOAL, 1.0) * 100
-        s_active   = min(active_min / self.ACTIVE_MIN_GOAL, 1.0) * 100
-        s_workouts = min(workouts / self.WORKOUTS_WEEK_GOAL, 1.0) * 100
+        # max(0.0, ...) borne par le bas au même titre que s_sedent ci-dessous :
+        # une valeur négative venue d'une API tierce produisait sinon un score
+        # global négatif, hors du contrat 0-100 annoncé.
+        s_steps    = max(0.0, min(steps_today / self.STEPS_GOAL, 1.0)) * 100
+        s_active   = max(0.0, min(active_min / self.ACTIVE_MIN_GOAL, 1.0)) * 100
+        s_workouts = max(0.0, min(workouts / self.WORKOUTS_WEEK_GOAL, 1.0)) * 100
         s_sedent   = max(0, 1 - (sedentary_h - 6) / (self.SEDENTARY_MAX - 6)) * 100
         s_sedent   = max(0, min(100, s_sedent))
 

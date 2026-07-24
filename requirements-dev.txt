@@ -1,0 +1,10 @@
+# Dépendances de développement et de CI uniquement — jamais installées dans
+# l'image Docker (le Dockerfile n'utilise que requirements.txt).
+pytest>=8.0
+
+# Les agents de scoring importent numpy (agentic/agents/activity_agent.py).
+# On installe volontairement ce strict minimum plutôt que requirements.txt :
+# ce dernier embarque torch et sentence-transformers (~2 Go) dont les tests
+# unitaires n'ont aucun besoin, ce qui ferait passer le job de test de
+# quelques secondes à plusieurs minutes.
+numpy>=1.26
