@@ -308,7 +308,7 @@ repo GitHub s'authentifie directement via OIDC auprès du service account
 Crée le projet GCP `lifeai-devops`, le lie au compte de facturation, active
 les APIs de base, crée le bucket de state Terraform, le Workload Identity
 Pool/Provider et le service account `github-actions-deployer` (rôles
-granulaires : `run.developer`, `artifactregistry.admin`, `compute.admin`,
+granulaires : `run.admin`, `artifactregistry.admin`, `compute.admin`,
 `secretmanager.admin`, `cloudscheduler.admin`, `serviceusage.serviceUsageAdmin`,
 `resourcemanager.projectIamAdmin`, `iam.serviceAccountUser`).
 

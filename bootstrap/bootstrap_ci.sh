@@ -89,7 +89,7 @@ fi
 # Registry, active les APIs et pose les bindings IAM runtime.
 echo "== Rôles IAM (projet) =="
 for role in \
-  roles/run.developer \
+  roles/run.admin \
   roles/artifactregistry.admin \
   roles/compute.admin \
   roles/secretmanager.admin \
