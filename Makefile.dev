@@ -1,0 +1,57 @@
+# LifeAI — orchestration de l'app web (front + back + base de données).
+# Le Makefile racine (legacy : Streamlit / ML) n'est pas touché.
+#
+# Usage :  make -f Makefile.dev <cible>     (ex. make -f Makefile.dev up)
+# Astuce : alias mk='make -f Makefile.dev'  →  puis  mk back / mk front …
+
+BACK_PORT  := 8000
+FRONT_DIR  := frontend_web
+
+.PHONY: help install db db-down db-logs back front build stop up
+
+## Affiche cette aide
+help:
+	@grep -E '^##' Makefile.dev | sed 's/^## //'
+
+## Installe toutes les dépendances (Python + frontend web)
+install:
+	pip install -r requirements.txt
+	cd $(FRONT_DIR) && npm install
+
+## Démarre la base PostgreSQL (Docker, port 5432)
+db:
+	docker compose up -d postgres
+
+## Arrête la base PostgreSQL
+db-down:
+	docker compose down
+
+## Affiche les logs de la base
+db-logs:
+	docker compose logs -f postgres
+
+## Démarre l'API FastAPI (port 8000) — à lancer depuis la racine
+back:
+	uvicorn api:app --reload --port $(BACK_PORT)
+
+## Démarre le frontend web React/Vite (port 3000)
+front:
+	cd $(FRONT_DIR) && npm run dev
+
+## Build de production du frontend web (-> frontend_web/dist)
+build:
+	cd $(FRONT_DIR) && npm run build
+
+## Arrête les serveurs de dev (API + Vite)
+stop:
+	@pkill -f "uvicorn api:app" 2>/dev/null || true
+	@pkill -f "$(FRONT_DIR)/node_modules/.bin/vite" 2>/dev/null || true
+	@echo "✓ Serveurs de dev arrêtés"
+
+## Démarre la db puis rappelle comment lancer back & front
+up: db
+	@echo ""
+	@echo "✓ PostgreSQL démarré."
+	@echo "  Ouvre 2 terminaux :"
+	@echo "    make -f Makefile.dev back    # API sur http://localhost:$(BACK_PORT)"
+	@echo "    make -f Makefile.dev front   # Web sur http://localhost:3000"

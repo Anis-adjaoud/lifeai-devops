@@ -1,0 +1,10 @@
+# Copier en terraform.tfvars pour un plan/apply local (fichier gitignored).
+project_id = "lifeai-devops"
+region     = "us-central1"
+zone       = "us-central1-a"
+
+# Valeurs sensibles obligatoires (pas de défaut) — à récupérer depuis les
+# credentials Twilio existants et le fichier google_client_secrets.json local.
+# twilio_account_sid = "AC..."
+# twilio_auth_token  = "..."
+# oauth_client_json  = "{\"web\":{...}}"
