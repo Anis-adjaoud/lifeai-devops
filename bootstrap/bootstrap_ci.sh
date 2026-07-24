@@ -44,14 +44,28 @@ PROJECT_NUMBER=$(gcloud projects describe "$PROJECT_ID" --format='value(projectN
 RUNTIME_SA="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
 
 echo "== Bucket GCS pour le state Terraform (${TFSTATE_BUCKET}) =="
+# Ce bucket mérite un traitement particulier : le state Terraform contient EN
+# CLAIR le mot de passe Postgres, les clés de session et de scheduler, les
+# identifiants Twilio et le client OAuth. Quiconque peut lire ce bucket
+# possède tous les secrets de l'application.
+#   - versioning        : permet de revenir en arrière sur un state corrompu
+#   - accès uniforme    : interdit les ACL par objet, qui contourneraient l'IAM
+#   - prévention d'accès public : verrouille l'exposition, même par erreur
 if ! gcloud storage buckets describe "gs://${TFSTATE_BUCKET}" >/dev/null 2>&1; then
   gcloud storage buckets create "gs://${TFSTATE_BUCKET}" \
     --location="$REGION" \
-    --uniform-bucket-level-access
+    --uniform-bucket-level-access \
+    --public-access-prevention
   gcloud storage buckets update "gs://${TFSTATE_BUCKET}" --versioning
 else
-  echo "Bucket déjà existant, skip."
+  echo "Bucket déjà existant, on vérifie son durcissement."
 fi
+
+# Idempotent : appliqué aussi aux buckets créés avant l'ajout de ces réglages.
+gcloud storage buckets update "gs://${TFSTATE_BUCKET}" \
+  --versioning \
+  --uniform-bucket-level-access \
+  --public-access-prevention >/dev/null
 
 echo "== Workload Identity Pool (${CI_WIF_POOL}) =="
 if ! gcloud iam workload-identity-pools describe "$CI_WIF_POOL" --location=global >/dev/null 2>&1; then

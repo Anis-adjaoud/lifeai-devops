@@ -46,6 +46,8 @@ dist/
 *.user
 .DS_Store
 Thumbs.db
+# Fichiers de verrouillage Office (crees quand un .pptx/.docx est ouvert)
+~$*
 
 # ── Logs & temporaires ────────────────────────────────────────────────────────
 *.log
@@ -82,4 +84,17 @@ reports/*.pdf
 terraform/.terraform/
 terraform/terraform.tfvars
 terraform/*.tfplan
+
+# Le state ne doit JAMAIS être commité : il contient en clair le mot de passe
+# Postgres, les clés de session/scheduler, les credentials Twilio et le client
+# OAuth. En fonctionnement normal il vit uniquement dans le bucket GCS
+# (backend distant, voir terraform/versions.tf) — ces règles sont un garde-fou
+# au cas où quelqu'un lancerait Terraform avec un backend local.
+*.tfstate
+*.tfstate.*
+.terraform.tfstate.lock.info
+# Un fichier *_override.tf peut rediriger le backend vers le disque local :
+# on ne veut pas qu'il parte dans le dépôt et contourne le backend distant.
+*_override.tf
+!terraform/terraform.tfvars.example
 # .terraform.lock.hcl reste committé (verrouille les versions de provider)
