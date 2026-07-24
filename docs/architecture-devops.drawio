@@ -1,0 +1,174 @@
+<mxfile host="app.diagrams.net" agent="claude-code" version="24.0.0">
+  <diagram name="Architecture DevOps - lifeai-devops" id="devops-arch">
+    <mxGraphModel dx="1600" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1800" pageHeight="1100" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <!-- Legend -->
+        <mxCell id="legend" value="Legende" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#999999;verticalAlign=top;fontSize=12;fontStyle=1;align=left;spacingLeft=8" vertex="1" parent="1">
+          <mxGeometry x="40" y="960" width="1720" height="110" as="geometry" />
+        </mxCell>
+        <mxCell id="leg1" value="GitHub" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#24292e;fontColor=#ffffff;strokeColor=#000000;fontSize=11" vertex="1" parent="1">
+          <mxGeometry x="60" y="1000" width="110" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="leg2" value="Ressource GCP geree par Terraform" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ede7f6;strokeColor=#5c4ee5;fontSize=11" vertex="1" parent="1">
+          <mxGeometry x="200" y="1000" width="260" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="leg3" value="Service externe (hors GCP)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff3e0;strokeColor=#e65100;fontSize=11" vertex="1" parent="1">
+          <mxGeometry x="490" y="1000" width="220" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="leg4" value="Cree une fois par bootstrap_ci.sh (pas Terraform)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fce4ec;strokeColor=#ad1457;fontSize=11" vertex="1" parent="1">
+          <mxGeometry x="740" y="1000" width="320" height="30" as="geometry" />
+        </mxCell>
+
+        <!-- Developer -->
+        <mxCell id="dev" value="Developpeur" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=13;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="40" y="60" width="160" height="50" as="geometry" />
+        </mxCell>
+
+        <!-- GitHub swimlane -->
+        <mxCell id="gh" value="GitHub -- Anis-adjaoud/lifeai-devops" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fafafa;strokeColor=#24292e;verticalAlign=top;fontSize=14;fontStyle=1;align=center" vertex="1" parent="1">
+          <mxGeometry x="40" y="150" width="420" height="760" as="geometry" />
+        </mxCell>
+        <mxCell id="ghrepo" value="Repo lifeai-devops&lt;br&gt;(1 commit initial, pas d'historique importe)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#24292e;fontColor=#ffffff;strokeColor=#000000;fontSize=12" vertex="1" parent="1">
+          <mxGeometry x="70" y="190" width="360" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="ghwf" value=".github/workflows/deploy.yml" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#24292e;verticalAlign=top;fontSize=12;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="70" y="280" width="360" height="330" as="geometry" />
+        </mxCell>
+        <mxCell id="job1" value="Job 1 : prepare-registry&lt;br&gt;terraform apply -target=&lt;br&gt;(APIs + Artifact Registry)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#24292e;fontColor=#ffffff;strokeColor=#000000;fontSize=11" vertex="1" parent="1">
+          <mxGeometry x="90" y="320" width="320" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="job2" value="Job 2 : build&lt;br&gt;docker buildx build + push&lt;br&gt;(cache GitHub Actions type=gha)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#24292e;fontColor=#ffffff;strokeColor=#000000;fontSize=11" vertex="1" parent="1">
+          <mxGeometry x="90" y="410" width="320" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="job3" value="Job 3 : deploy&lt;br&gt;terraform apply (complet)&lt;br&gt;image_tag=&lt;sha&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#24292e;fontColor=#ffffff;strokeColor=#000000;fontSize=11" vertex="1" parent="1">
+          <mxGeometry x="90" y="500" width="320" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="ghsecrets" value="Secrets Actions&lt;br&gt;GCP_WORKLOAD_IDENTITY_PROVIDER, GCP_SERVICE_ACCOUNT, GCP_PROJECT_ID,&lt;br&gt;TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, OAUTH_CLIENT_JSON&lt;br&gt;(passes a Terraform via TF_VAR_*)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff9c4;strokeColor=#f9a825;fontSize=11" vertex="1" parent="1">
+          <mxGeometry x="70" y="640" width="360" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="ghtrigger" value="push sur main /&lt;br&gt;workflow_dispatch" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#24292e;fontSize=11" vertex="1" parent="1">
+          <mxGeometry x="70" y="750" width="360" height="50" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e-dev-repo" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;fontSize=11;" edge="1" parent="1" source="dev" target="ghrepo">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-repo-trigger" value="git push" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;fontSize=11;" edge="1" parent="1" source="ghrepo" target="ghtrigger">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-trigger-job1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;fontSize=11;" edge="1" parent="1" source="ghtrigger" target="job1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-job1-2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;fontSize=11;" edge="1" parent="1" source="job1" target="job2">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-job2-3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;fontSize=11;" edge="1" parent="1" source="job2" target="job3">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- GCP boundary -->
+        <mxCell id="gcp" value="Projet GCP : lifeai-devops (standalone, aucune organisation, facturation dediee)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e8f0fe;strokeColor=#4285F4;verticalAlign=top;fontSize=14;fontStyle=1;align=center" vertex="1" parent="1">
+          <mxGeometry x="520" y="150" width="1000" height="760" as="geometry" />
+        </mxCell>
+
+        <mxCell id="wif" value="Workload Identity Pool + Provider OIDC&lt;br&gt;github-pool / github-provider&lt;br&gt;(restreint au repo, attribute-condition)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fce4ec;strokeColor=#ad1457;fontSize=11" vertex="1" parent="1">
+          <mxGeometry x="550" y="190" width="280" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="ciSa" value="Service account&lt;br&gt;github-actions-deployer&lt;br&gt;(roles granulaires : run.admin, artifactregistry.admin,&lt;br&gt;compute.admin, secretmanager.admin, cloudscheduler.admin,&lt;br&gt;serviceusage.serviceUsageAdmin, resourcemanager.projectIamAdmin,&lt;br&gt;iam.serviceAccountUser)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fce4ec;strokeColor=#ad1457;fontSize=11" vertex="1" parent="1">
+          <mxGeometry x="870" y="190" width="320" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="tfstate" value="Bucket GCS&lt;br&gt;lifeai-devops-tfstate&lt;br&gt;(state Terraform, versionne)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fce4ec;strokeColor=#ad1457;fontSize=11" vertex="1" parent="1">
+          <mxGeometry x="1230" y="190" width="240" height="70" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e-wif-sa" value="impersonation" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;fontSize=10;" edge="1" parent="1" source="wif" target="ciSa">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-job1-wif" value="auth OIDC keyless" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;dashed=1;fontSize=10;" edge="1" parent="1" source="job1" target="wif">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-job3-tfstate" value="terraform init/apply&lt;br&gt;(lit/ecrit le state)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;dashed=1;fontSize=10;" edge="1" parent="1" source="job3" target="tfstate">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="ar" value="Artifact Registry&lt;br&gt;repo : lifeai&lt;br&gt;(images Docker)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ede7f6;strokeColor=#5c4ee5;fontSize=12" vertex="1" parent="1">
+          <mxGeometry x="550" y="320" width="220" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="cloudrun" value="Cloud Run : lifeai-api&lt;br&gt;FastAPI + React (StaticFiles)&lt;br&gt;scale 0-3, us-central1&lt;br&gt;SA runtime = compute default" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ede7f6;strokeColor=#5c4ee5;fontSize=12" vertex="1" parent="1">
+          <mxGeometry x="840" y="310" width="260" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="secretmgr" value="Secret Manager&lt;br&gt;lifeai-database-url, lifeai-scheduler-secret,&lt;br&gt;lifeai-session-secret, lifeai-twilio-account-sid,&lt;br&gt;lifeai-twilio-auth-token, lifeai-oauth-client-json" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ede7f6;strokeColor=#5c4ee5;fontSize=11" vertex="1" parent="1">
+          <mxGeometry x="1170" y="300" width="300" height="100" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e-job2-ar" value="docker push&lt;br&gt;:sha / :latest" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;fontSize=10;" edge="1" parent="1" source="job2" target="ar">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-ar-run" value="pull image" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;fontSize=10;" edge="1" parent="1" source="ar" target="cloudrun">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-secret-run" value="env vars / secret refs&lt;br&gt;(secretAccessor)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;fontSize=10;" edge="1" parent="1" source="secretmgr" target="cloudrun">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-job3-run" value="terraform apply&lt;br&gt;(cree/actualise)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;dashed=1;fontSize=10;" edge="1" parent="1" source="job3" target="cloudrun">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- VPC -->
+        <mxCell id="vpc" value="VPC default (reseau global)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e3f2fd;strokeColor=#1565c0;verticalAlign=top;fontSize=13;fontStyle=1;align=center" vertex="1" parent="1">
+          <mxGeometry x="550" y="450" width="550" height="220" as="geometry" />
+        </mxCell>
+        <mxCell id="fw" value="Firewall : port 5432 autorise uniquement&lt;br&gt;depuis le VPC interne (10.128.0.0/9)&lt;br&gt;et la plage IAP (35.235.240.0/20)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ede7f6;strokeColor=#5c4ee5;fontSize=10" vertex="1" parent="1">
+          <mxGeometry x="570" y="490" width="280" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="vm" value="Compute Engine e2-micro (Always Free)&lt;br&gt;lifeai-db -- us-west1-b&lt;br&gt;PostgreSQL 16 (Docker)&lt;br&gt;mot de passe genere (random_password)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ede7f6;strokeColor=#5c4ee5;fontSize=11" vertex="1" parent="1">
+          <mxGeometry x="870" y="480" width="280" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="e-run-vm" value="Direct VPC egress&lt;br&gt;private-ranges-only :5432" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;fontSize=10;" edge="1" parent="1" source="cloudrun" target="vm">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="scheduler" value="Cloud Scheduler&lt;br&gt;lifeai-daily-sync&lt;br&gt;0 7 * * * (Europe/Paris)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ede7f6;strokeColor=#5c4ee5;fontSize=11" vertex="1" parent="1">
+          <mxGeometry x="840" y="720" width="260" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="e-sched-run" value="POST /internal/sync-all&lt;br&gt;header X-Scheduler-Key" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;fontSize=10;" edge="1" parent="1" source="scheduler" target="cloudrun">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- External services -->
+        <mxCell id="ext" value="Services externes" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff8f0;strokeColor=#e65100;verticalAlign=top;fontSize=14;fontStyle=1;align=center" vertex="1" parent="1">
+          <mxGeometry x="1560" y="150" width="200" height="760" as="geometry" />
+        </mxCell>
+        <mxCell id="user" value="Utilisateur&lt;br&gt;(navigateur)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff3e0;strokeColor=#e65100;fontSize=11" vertex="1" parent="1">
+          <mxGeometry x="1580" y="190" width="160" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="oauth" value="Google OAuth&lt;br&gt;consent screen + client dedie&lt;br&gt;(mode Testing, utilisateurs test)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff3e0;strokeColor=#e65100;fontSize=11" vertex="1" parent="1">
+          <mxGeometry x="1580" y="320" width="160" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="twilio" value="Twilio WhatsApp&lt;br&gt;(sandbox partage)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff3e0;strokeColor=#e65100;fontSize=11" vertex="1" parent="1">
+          <mxGeometry x="1580" y="450" width="160" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="vertex" value="Vertex AI&lt;br&gt;Gemini 2.5 Flash&lt;br&gt;(roles/aiplatform.user)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff3e0;strokeColor=#e65100;fontSize=11" vertex="1" parent="1">
+          <mxGeometry x="1580" y="560" width="160" height="70" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e-run-user" value="HTTPS" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;startArrow=block;endArrow=block;fontSize=10;" edge="1" parent="1" source="cloudrun" target="user">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-run-oauth" value="OAuth2 PKCE" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;startArrow=block;endArrow=block;fontSize=10;" edge="1" parent="1" source="cloudrun" target="oauth">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-run-twilio" value="notifications" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;fontSize=10;" edge="1" parent="1" source="cloudrun" target="twilio">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-run-vertex" value="inference LLM" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;fontSize=10;" edge="1" parent="1" source="cloudrun" target="vertex">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
