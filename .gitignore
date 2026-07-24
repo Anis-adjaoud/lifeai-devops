@@ -1,7 +1,10 @@
 # ── Environnement Python ──────────────────────────────────────────────────────
 .venv/
 venv/
-env/
+# Barre oblique initiale volontaire : sans elle, « env/ » matcherait tout
+# dossier nommé env à n'importe quelle profondeur — et masquerait
+# terraform/env/, qui contient les variables par environnement.
+/env/
 __pycache__/
 **/__pycache__/
 *.py[cod]
