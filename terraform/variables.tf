@@ -9,8 +9,14 @@ variable "region" {
 }
 
 variable "zone" {
+  # us-central1-a/b/c/f étaient tous en ZONE_RESOURCE_POOL_EXHAUSTED pour
+  # e2-micro au moment du premier apply (vérifié via essais gcloud directs,
+  # quota du projet non en cause : 200 CPUs dispo, 0 utilisés). us-west1-b a
+  # du stock et reste éligible Always Free. Le VPC (réseau `default`) est
+  # global, donc rien n'empêche la VM d'être dans une région différente de
+  # `var.region` (Cloud Run/Artifact Registry restent en us-central1).
   type    = string
-  default = "us-central1-b"
+  default = "us-west1-b"
 }
 
 variable "service_name" {
