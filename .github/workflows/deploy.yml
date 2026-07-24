@@ -54,10 +54,15 @@ jobs:
           terraform apply -auto-approve \
             -target=google_project_service.apis \
             -target=google_artifact_registry_repository.lifeai \
-            -var="project_id=${{ secrets.GCP_PROJECT_ID }}" \
-            -var="twilio_account_sid=${{ secrets.TWILIO_ACCOUNT_SID }}" \
-            -var="twilio_auth_token=${{ secrets.TWILIO_AUTH_TOKEN }}" \
-            -var="oauth_client_json=${{ secrets.OAUTH_CLIENT_JSON }}"
+            -var="project_id=${{ secrets.GCP_PROJECT_ID }}"
+        env:
+          # Passés en env (lus nativement par Terraform via TF_VAR_*) plutôt
+          # qu'interpolés dans un argument -var="..." : le JSON du client
+          # OAuth contient des guillemets qui casseraient le parsing du shell
+          # si on l'injectait directement dans la ligne de commande.
+          TF_VAR_twilio_account_sid: ${{ secrets.TWILIO_ACCOUNT_SID }}
+          TF_VAR_twilio_auth_token: ${{ secrets.TWILIO_AUTH_TOKEN }}
+          TF_VAR_oauth_client_json: ${{ secrets.OAUTH_CLIENT_JSON }}
 
   build:
     needs: prepare-registry
@@ -112,10 +117,11 @@ jobs:
       - run: |
           terraform apply -auto-approve \
             -var="project_id=${{ secrets.GCP_PROJECT_ID }}" \
-            -var="image_tag=${{ github.sha }}" \
-            -var="twilio_account_sid=${{ secrets.TWILIO_ACCOUNT_SID }}" \
-            -var="twilio_auth_token=${{ secrets.TWILIO_AUTH_TOKEN }}" \
-            -var="oauth_client_json=${{ secrets.OAUTH_CLIENT_JSON }}"
+            -var="image_tag=${{ github.sha }}"
+        env:
+          TF_VAR_twilio_account_sid: ${{ secrets.TWILIO_ACCOUNT_SID }}
+          TF_VAR_twilio_auth_token: ${{ secrets.TWILIO_AUTH_TOKEN }}
+          TF_VAR_oauth_client_json: ${{ secrets.OAUTH_CLIENT_JSON }}
 
       - id: tf
         run: echo "service_url=$(terraform output -raw service_url)" >> "$GITHUB_OUTPUT"
