@@ -15,8 +15,10 @@ locals {
   ]
 }
 
+# Ressource partagée : activée une seule fois pour le projet, par
+# l'environnement propriétaire (voir var.manage_shared_infra).
 resource "google_project_service" "apis" {
-  for_each = toset(local.required_apis)
+  for_each = var.manage_shared_infra ? toset(local.required_apis) : toset([])
 
   project            = var.project_id
   service            = each.value

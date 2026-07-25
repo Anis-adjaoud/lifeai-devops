@@ -185,7 +185,9 @@ L'application est accessible sur **http://localhost:5173**
 ├── api.py                          # FastAPI — routes REST + OAuth flow
 ├── docker-compose.yml              # PostgreSQL 16 (dev local)
 ├── Dockerfile                      # Build image prod (backend + frontend)
-├── requirements.txt
+├── requirements.txt                # Dépendances applicatives (image Docker)
+├── requirements-dev.txt            # Dépendances de test / CI uniquement
+├── pytest.ini
 ├── seed_demo_profiles.py           # Génère les profils démo (Lucas Excellent, Emma Critique)
 │
 ├── agentic/
@@ -199,9 +201,21 @@ L'application est accessible sur **http://localhost:5173**
 ├── data/foods_table.xlsx           # Base nutritionnelle officielle française (CIQUAL 2025)
 ├── output/models/                  # Modèles XGBoost entraînés (LifeSnaps), embarqués dans l'image
 │
+├── tests/                          # Tests unitaires (agents de scoring, Nutri-Score)
+│
 ├── terraform/                      # Toute l'infra GCP (VM, secrets, Cloud Run, scheduler...)
-├── bootstrap/bootstrap_ci.sh       # Bootstrap one-shot : projet GCP + WIF + service account CI
-└── .github/workflows/deploy.yml    # CI/CD : build image → terraform apply
+│   ├── locals.tf                   # Nommage et réglages dérivés de var.environment
+│   └── env/{dev,prod}.tfvars       # Variables propres à chaque environnement
+│
+├── bootstrap/
+│   ├── bootstrap_ci.sh             # One-shot : projet GCP + state + WIF + service account CI
+│   └── migrate_state_to_envs.sh    # One-shot : migration vers les states par environnement
+│
+├── .github/workflows/
+│   ├── ci.yml                      # Qualité → build → déploiement dev
+│   └── cd-prod.yml                 # Promotion en production (approbation requise)
+│
+└── docs/                           # Dossier technique, schéma d'architecture, slides
 ```
 
 ---
@@ -274,30 +288,130 @@ MODEL = "gemini-2.5-flash"                                    # Google (défaut)
 Infra 100% as-code, sur un projet GCP dédié (`lifeai-devops`, isolé du projet
 scolaire d'origine) :
 
-| Composant | Service GCP | Géré par |
+| Composant | Service GCP | Portée |
 |---|---|---|
-| Backend FastAPI + agents ADK + frontend React | Cloud Run (scale-to-zero, `us-central1`) | Terraform |
-| PostgreSQL | VM Compute Engine `e2-micro` (Always Free) + Docker, VPC interne uniquement | Terraform |
-| Secrets (DSN Postgres, Twilio, OAuth, clés scheduler/session) | Secret Manager | Terraform |
-| Sync quotidienne Google Fit | Cloud Scheduler → `POST /internal/sync-all` | Terraform |
-| Images Docker | Artifact Registry | Terraform (repo) + CI (build/push) |
-| Build & déploiement | GitHub Actions | — |
+| Backend FastAPI + agents ADK + frontend React | Cloud Run (scale-to-zero, `us-central1`) | par environnement |
+| Secrets (DSN Postgres, Twilio, OAuth, clés scheduler/session) | Secret Manager | par environnement |
+| Sync quotidienne Google Fit | Cloud Scheduler → `POST /internal/sync-all` | prod uniquement |
+| PostgreSQL | VM Compute Engine `e2-micro` (Always Free), VPC interne uniquement | partagé (une base par environnement) |
+| Images Docker | Artifact Registry | partagé |
+| Règles firewall, activation des APIs | VPC / Service Usage | partagé |
+
+Tout est géré par Terraform, à l'exception du build d'image (GitHub Actions)
+et des prérequis d'amorçage (`bootstrap/bootstrap_ci.sh`).
 
 Le mot de passe Postgres et les clés `SCHEDULER_SECRET`/`SESSION_SECRET` sont
 générés aléatoirement par Terraform (`random_password`/`random_id`) — jamais
 en clair dans le repo. Les credentials Twilio et le client OAuth Google sont
 fournis via des secrets GitHub Actions, jamais committés.
 
-### Pipeline CI/CD
+### Environnements
 
-À chaque push sur `main` (voir `.github/workflows/deploy.yml`) :
+Deux environnements coexistent dans le même projet GCP, avec des **states
+Terraform séparés** : un `apply` sur dev ne peut donc pas modifier la prod.
 
-1. **build** — build l'image Docker (backend + frontend) et la pousse sur Artifact Registry, taggée avec le SHA du commit + `latest`. Cache de layers via GitHub Actions (`docker/build-push-action`, `type=gha`).
-2. **deploy** — `terraform apply` (dans `terraform/`) crée/met à jour toute l'infra avec la nouvelle image. State distant dans le bucket GCS `lifeai-devops-tfstate`.
+| | dev | prod |
+|---|---|---|
+| Service Cloud Run | `lifeai-api-dev` | `lifeai-api` |
+| Secrets | `lifeai-dev-*` | `lifeai-*` |
+| Base de données | `lifeai_dev` | `lifeai` |
+| State | `gs://lifeai-devops-tfstate/env/dev` | `.../env/prod` |
+| Instances max | 1 | 3 |
+| Sync Google Fit quotidienne | désactivée | activée |
+| Fichier de variables | `terraform/env/dev.tfvars` | `terraform/env/prod.tfvars` |
+
+La production ne porte pas de suffixe : ses ressources sont antérieures à la
+séparation, et les renommer détruirait le service Cloud Run — dont l'URL est
+déclarée dans le client OAuth Google.
+
+Les deux environnements partagent la **même VM Postgres** (le palier Always
+Free ne couvre qu'une `e2-micro` par compte de facturation) mais chacun a sa
+propre base. Prod possède les ressources partagées — APIs, Artifact Registry,
+règles firewall, VM — via `manage_shared_infra = true` ; dev les lit par des
+data sources. Ce drapeau ne doit être activé que pour un seul environnement,
+sinon le second échouerait sur des ressources « déjà existantes ».
+
+### Modèle de branches
+
+Deux branches, chacune liée à un environnement :
+
+| Branche | Environnement | Comment on y arrive |
+|---|---|---|
+| `develop` | dev | push direct — c'est la branche de travail |
+| `main` | production | **uniquement par pull request** validée |
+
+```
+   push                    pull request                merge
+develop ──────▶ DEV        develop → main ──────▶  main ──────▶ PRODUCTION
+                           revue + plan Terraform
+```
+
+`main` reflète donc l'état réel de la production : ce qui y est fusionné est
+déployé.
+
+### Pipelines CI/CD
+
+Deux pipelines distincts, séparés par la **revue de pull request**.
+
+**1. `ci.yml` — qualité, build et déploiement dev**
+
+Déclenché par un push sur `develop`, et par toute pull request visant `main`.
+
+| Job | Rôle |
+|---|---|
+| `lint` | `terraform fmt -check`, `terraform validate`, `tflint` |
+| `test` | `pytest` — 36 tests sur les agents de scoring et le Nutri-Score |
+| `security` | `checkov` sur les fichiers `.tf` |
+| `plan` | *(pull request uniquement)* `terraform plan` publié en commentaire de la PR — **rien n'est appliqué** |
+| `build` | *(push develop)* image Docker taggée par SHA, poussée sur Artifact Registry |
+| `deploy-dev` | *(push develop)* `terraform apply` sur dev, puis vérification HTTP |
+
+Sur une pull request, le pipeline s'arrête donc au plan : il montre ce que la
+fusion changera en production, sans rien modifier.
+
+**2. `cd-prod.yml` — déploiement production**
+
+Déclenché par la fusion d'une pull request dans `main`.
+
+| Job | Rôle |
+|---|---|
+| `verifier` | Rejoue tests, lint et scan de sécurité sur `main` |
+| `build` | Reconstruit l'image depuis le commit de `main` |
+| `deploy-prod` | `terraform apply` sur prod, puis vérification HTTP |
+
+> **Reconstruction plutôt que promotion.** La fusion crée un nouveau SHA :
+> l'image construite depuis `develop` ne porte pas le même identifiant que le
+> commit de `main`. La production reçoit donc une image reconstruite, et non
+> l'artefact au bit près qui a tourné en dev. C'est le compromis retenu pour
+> la lisibilité ; le cache de layers rend les deux builds très proches.
+> L'alternative — fusion en rebase, qui conserve le SHA — permettrait une
+> promotion stricte.
 
 Auth GCP **sans clé de service account** : Workload Identity Federation — le
-repo GitHub s'authentifie directement via OIDC auprès du service account
+dépôt s'authentifie via OIDC auprès du service account
 `github-actions-deployer`.
+
+### Configuration requise côté GitHub
+
+La revue de pull request est le garde-fou avant la production. Elle n'a
+d'effet que si `main` est protégée : sans cela, un push direct sur `main`
+déploierait en production sans aucune revue.
+
+**Settings → Branches → Add branch protection rule**, motif `main` :
+
+- ☑ *Require a pull request before merging* — au minimum
+- ☑ *Require status checks to pass* → sélectionner `lint`, `test`,
+  `security`, `plan`
+- ☑ *Do not allow bypassing the above settings* (sinon la règle ne s'applique
+  pas à l'administrateur du dépôt, c'est-à-dire à toi)
+
+Créer également les environnements **Settings → Environments** : `development`
+et `production`. Ils ne sont pas obligatoires, mais font apparaître les
+déploiements et leurs URL dans l'onglet Deployments.
+
+> Ajouter *Required reviewers* sur l'environnement `production` poserait un
+> second garde-fou, au moment du déploiement cette fois. Redondant pour un
+> projet solo, où la revue de PR suffit.
 
 ### Bootstrap initial (une seule fois)
 
@@ -324,26 +438,112 @@ granulaires : `run.admin`, `artifactregistry.admin`, `compute.admin`,
 | `TWILIO_AUTH_TOKEN` | Console Twilio |
 | `OAUTH_CLIENT_JSON` | Contenu complet du `client_secret_*.json` téléchargé depuis GCP Console → APIs & Services → Identifiants |
 
-Une fois les secrets renseignés, tout push sur `main` déploie automatiquement.
-
-### Déploiement / plan manuel (local)
+**Puis, une seule fois, le premier déploiement de production depuis un poste
+local.** Il crée les ressources partagées — dont l'Artifact Registry, sans
+lequel la CI ne pourrait pas pousser d'image :
 
 ```bash
 cd terraform
-cp terraform.tfvars.example terraform.tfvars   # puis compléter les valeurs sensibles
-terraform init
-terraform plan
-terraform apply
+terraform init -reconfigure -backend-config="prefix=env/prod"
+terraform apply -var-file=env/prod.tfvars -var="image_tag=latest"
+```
+
+Créer ensuite la base de l'environnement dev (voir plus bas), et déclarer les
+environnements GitHub (section précédente).
+
+Une fois ces étapes faites, le cycle normal s'applique : on travaille sur
+`develop` (déploiement dev automatique), puis on ouvre une pull request vers
+`main` pour passer en production.
+
+### Tests
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
+
+36 tests couvrant les quatre agents de scoring et le calcul du Nutri-Score.
+Ce sont des fonctions pures : aucun service externe, aucune base, aucun appel
+LLM — la suite s'exécute en moins d'une seconde.
+
+`requirements-dev.txt` est volontairement séparé de `requirements.txt` : ce
+dernier embarque `torch` et `sentence-transformers` (~2 Go), inutiles aux
+tests unitaires et qui feraient passer le job de quelques secondes à plusieurs
+minutes.
+
+### Plan / apply manuel (local)
+
+Le préfixe de state **doit** être passé à l'`init` : le bloc `backend`
+n'accepte pas de variable, et chaque environnement possède son propre state.
+
+```bash
+cd terraform
+
+# Dev
+terraform init -reconfigure -backend-config="prefix=env/dev"
+terraform plan -var-file=env/dev.tfvars
+
+# Prod
+terraform init -reconfigure -backend-config="prefix=env/prod"
+terraform plan -var-file=env/prod.tfvars
+```
+
+Les trois variables sensibles (`twilio_account_sid`, `twilio_auth_token`,
+`oauth_client_json`) n'ont pas de valeur par défaut. Les fournir par
+l'environnement plutôt qu'en ligne de commande — le JSON OAuth contient des
+guillemets qui cassent le découpage du shell dans un `-var="…"` :
+
+```bash
+export TF_VAR_twilio_account_sid=$(gcloud secrets versions access latest --secret=lifeai-twilio-account-sid)
+export TF_VAR_twilio_auth_token=$(gcloud secrets versions access latest --secret=lifeai-twilio-auth-token)
+export TF_VAR_oauth_client_json=$(gcloud secrets versions access latest --secret=lifeai-oauth-client-json)
+```
+
+### Scan de sécurité local
+
+```bash
+pip install checkov
+checkov -d terraform --var-file terraform/env/prod.tfvars
+```
+
+Le `--var-file` est **indispensable**. La moitié des ressources est
+conditionnée par `var.manage_shared_infra`, dont la valeur par défaut est
+`false` : sans ce fichier, checkov les considère comme non créées et n'exécute
+que 2 contrôles au lieu de 28 — en rendant un rapport vert trompeur.
+
+Les constats acceptés sont justifiés par des commentaires
+`#checkov:skip=<ID>:<raison>` dans les fichiers `.tf`, pour qu'aucune
+exception ne soit muette.
+
+### Créer la base d'un nouvel environnement
+
+Le script de démarrage de la VM ne crée que la base `lifeai`. Il ne faut
+**pas** le modifier pour en ajouter d'autres : `metadata_startup_script` est
+un attribut *ForceNew*, donc toute modification détruit la VM, son disque, et
+donc toutes les bases.
+
+La base d'un nouvel environnement se crée une fois, par un tunnel IAP :
+
+```bash
+gcloud compute start-iap-tunnel lifeai-db 5432 \
+  --local-host-port=localhost:5433 --zone=us-west1-b &
+
+MDP=$(gcloud secrets versions access latest --secret=lifeai-database-url \
+      | sed -E 's#postgresql://postgres:([^@]+)@.*#\1#')
+psql "postgresql://postgres:${MDP}@localhost:5433/lifeai" \
+     -c 'CREATE DATABASE lifeai_dev'
 ```
 
 ### Premier déploiement
 
 Ajouter l'URL Cloud Run (sortie `service_url` de Terraform, au format
-`https://lifeai-api-<project_number>.us-central1.run.app`) + `/auth/callback`
-aux *Authorized redirect URIs* du client OAuth existant, dans **GCP Console →
-APIs & Services → Identifiants** (projet d'origine, le client OAuth est
-réutilisé tel quel — un client OAuth n'est pas lié à un seul projet Cloud
-Run).
+`https://lifeai-api-<numéro_de_projet>.us-central1.run.app`) suivie de
+`/auth/callback` aux *Authorized redirect URIs* du client OAuth, dans
+**GCP Console → APIs & Services → Identifiants**. Chaque environnement ayant
+son propre service, dev et prod ont chacun leur URI de redirection à déclarer.
+
+Tant que l'écran de consentement est en mode *Testing*, chaque compte devant
+se connecter doit figurer dans la liste des utilisateurs de test.
 
 ---
 

@@ -124,10 +124,15 @@ class NutritionAgent(BaseAgent):
         )
 
         # ── Anomalies ─────────────────────────────────────────────────────
+        # Même garde que pour cal_ratio plus haut : un profil dont l'objectif
+        # calorique vaut 0 (modifiable via PUT /api/profile) faisait planter
+        # l'analyse sur une division par zéro.
+        pct_objectif = (cal_today / cal_goal * 100) if cal_goal > 0 else 0.0
+
         anomalies = []
         if cal_today < cal_goal * 0.6:
             anomalies.append(
-                f"Apport calorique très bas : {cal_today} kcal ({cal_today/cal_goal*100:.0f}% de l'objectif)"
+                f"Apport calorique très bas : {cal_today} kcal ({pct_objectif:.0f}% de l'objectif)"
             )
         if cal_today > cal_goal * 1.4:
             surplus = cal_today - cal_goal
@@ -153,7 +158,7 @@ class NutritionAgent(BaseAgent):
 
         # ── Insights ──────────────────────────────────────────────────────
         insights = [
-            f"Calories : {cal_today} kcal / {cal_goal} kcal ({cal_today/cal_goal*100:.0f}%)",
+            f"Calories : {cal_today} kcal / {cal_goal} kcal ({pct_objectif:.0f}%)",
             f"Répartition macros : {macro_str} (cible : P:30% / G:40% / L:30%)",
             f"Hydratation : {water_ml} ml / {self.WATER_GOAL} ml",
             f"Fibres : {fiber_g:.0f}g (objectif ≥ {self.FIBER_MIN}g)",

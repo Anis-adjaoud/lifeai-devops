@@ -1,5 +1,10 @@
+# La synchronisation quotidienne Google Fit ne tourne qu'en production : en
+# dev elle consommerait le quota de l'API Google Fit et enverrait de vraies
+# notifications WhatsApp pour des données de test (voir local.reglages).
 resource "google_cloud_scheduler_job" "daily_sync" {
-  name      = "lifeai-daily-sync"
+  count = local.env.scheduler_actif ? 1 : 0
+
+  name      = local.scheduler_job
   project   = var.project_id
   region    = var.region
   schedule  = "0 7 * * *"

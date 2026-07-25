@@ -1,0 +1,157 @@
+name: CD · déploiement production
+
+# Second pipeline, déclenché par la FUSION d'une pull request dans `main`.
+#
+# La porte de contrôle est la pull request elle-même : elle exige une revue,
+# affiche le diff du code, le résultat des tests et le plan Terraform de
+# production. Rien n'atteint `main` — donc la production — sans être passé par
+# là, à condition que la protection de branche soit configurée (voir README).
+#
+# `main` reflète ainsi l'état réel de la production.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "api.py"
+      - "agentic/**"
+      - "nutrition/**"
+      - "frontend_web/**"
+      - "data/foods_table.xlsx"
+      - "output/models/**"
+      - "tests/**"
+      - "Dockerfile"
+      - "requirements.txt"
+      - "requirements-dev.txt"
+      - "terraform/**"
+      - ".github/workflows/**"
+
+  # Permet de redéployer `main` à l'identique après un incident, sans
+  # nouveau commit.
+  workflow_dispatch: {}
+
+env:
+  REGION: us-central1
+  IMAGE: us-central1-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/lifeai/lifeai-api
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  # Les mêmes portes qu'en CI sont rejouées sur `main`. C'est en principe
+  # redondant — le code arrive d'une PR déjà validée — mais peu coûteux, et
+  # cela garantit que `main` est vérifié pour lui-même : une fusion mal
+  # résolue ou un push direct ne passeraient pas au travers.
+  verifier:
+    name: Vérifications sur main
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - run: pip install -r requirements-dev.txt
+      - run: pytest
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~1.12"
+
+      - name: Formatage et validation Terraform
+        working-directory: terraform
+        run: |
+          terraform fmt -check -recursive
+          terraform init -backend=false -input=false
+          terraform validate
+
+      - name: checkov
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: terraform/
+          framework: terraform
+          var_file: terraform/env/prod.tfvars
+          quiet: true
+          output_format: cli
+          soft_fail: false
+
+  build:
+    name: Construction de l'image de production
+    needs: verifier
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - run: gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
+
+      - uses: docker/setup-buildx-action@v3
+
+      # L'image est reconstruite à partir du commit de `main`, plutôt que
+      # promue depuis dev. La fusion crée un nouveau SHA, donc l'image
+      # construite sur `develop` ne porte pas le même identifiant.
+      # Contrepartie assumée : la production reçoit une image reconstruite, et
+      # non l'artefact au bit près qui a tourné en dev. Le cache de layers
+      # rend malgré tout les deux builds très proches.
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ github.sha }}
+            ${{ env.IMAGE }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy-prod:
+    name: Déploiement production
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: ${{ steps.sortie.outputs.service_url }}
+    defaults:
+      run:
+        working-directory: terraform
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~1.12"
+
+      - run: terraform init -reconfigure -input=false -backend-config="prefix=env/prod"
+
+      - name: Apply (production)
+        env:
+          TF_VAR_twilio_account_sid: ${{ secrets.TWILIO_ACCOUNT_SID }}
+          TF_VAR_twilio_auth_token: ${{ secrets.TWILIO_AUTH_TOKEN }}
+          TF_VAR_oauth_client_json: ${{ secrets.OAUTH_CLIENT_JSON }}
+        run: |
+          terraform apply -auto-approve \
+            -var-file=env/prod.tfvars \
+            -var="project_id=${{ secrets.GCP_PROJECT_ID }}" \
+            -var="image_tag=${{ github.sha }}"
+
+      - id: sortie
+        run: echo "service_url=$(terraform output -raw service_url)" >> "$GITHUB_OUTPUT"
+
+      - name: La production répond-elle ?
+        run: |
+          url=$(terraform output -raw service_url)
+          code=$(curl -s -o /dev/null -w '%{http_code}' --retry 5 --retry-delay 10 "$url")
+          echo "$url -> HTTP $code"
+          test "$code" = "200" || { echo "La production ne répond pas correctement."; exit 1; }

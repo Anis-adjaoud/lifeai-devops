@@ -4,7 +4,7 @@
 **Sous-projet** : Industrialisation du déploiement (Infrastructure as Code + CI/CD)
 **Repo** : [Anis-adjaoud/lifeai-devops](https://github.com/Anis-adjaoud/lifeai-devops)
 **Projet GCP** : `lifeai-devops`
-**Schéma d'architecture** : [`architecture-devops.drawio`](./architecture-devops.drawio)
+**Schéma d'architecture** : [`architecture-devops.drawio`](./architecture-devops.drawio) — 2 pages : *1. Application & runtime*, *2. CI/CD & Infrastructure as Code*
 **Documentation complémentaire** : [`pipeline-devops.md`](./pipeline-devops.md) (détail pas-à-pas de la mise en place et de chaque incident rencontré)
 
 ---
@@ -97,7 +97,8 @@ le problème sans introduire de load balancer (payant).
 
 ## 3. Architecture d'infrastructure cloud (GCP)
 
-Voir le schéma complet : [`architecture-devops.drawio`](./architecture-devops.drawio).
+Voir le schéma complet : [`architecture-devops.drawio`](./architecture-devops.drawio) — page 1
+détaille l'application dans son conteneur et ses connexions, page 2 la chaîne de déploiement.
 
 ### 3.1 Vue d'ensemble
 
@@ -276,14 +277,69 @@ terraform/
 ├── secrets.tf                  # 6 secrets Secret Manager + leurs versions
 ├── iam.tf                      # Bindings secretAccessor + aiplatform.user (SA runtime)
 ├── cloud_run.tf                # Service Cloud Run + binding IAM public
-├── cloud_scheduler.tf          # Job de sync quotidienne
-├── outputs.tf                  # service_url, db_internal_ip
-└── terraform.tfvars.example    # Modele pour un plan/apply local
+├── cloud_scheduler.tf          # Job de sync quotidienne (production uniquement)
+├── locals.tf                   # Nommage et reglages derives de var.environment
+├── outputs.tf                  # service_url, db_internal_ip, environment...
+└── env/
+    ├── dev.tfvars              # environment = "dev"
+    └── prod.tfvars             # environment = "prod", proprietaire du partage
 ```
+
+### 5.2 bis Séparation des environnements
+
+Un seul jeu de fichiers sert les deux environnements ; ce qui les distingue
+est calculé dans `locals.tf` à partir de `var.environment` :
+
+| | dev | prod |
+|---|---|---|
+| Service Cloud Run | `lifeai-api-dev` | `lifeai-api` |
+| Secrets | `lifeai-dev-*` | `lifeai-*` |
+| Base de données | `lifeai_dev` | `lifeai` |
+| State | préfixe `env/dev` | préfixe `env/prod` |
+| Instances maximum | 1 | 3 |
+| Synchronisation quotidienne | désactivée | activée |
+
+Trois décisions méritent d'être explicitées.
+
+**La production ne porte pas de suffixe.** Ses ressources existaient avant la
+séparation ; les renommer en `-prod` aurait entraîné la destruction puis la
+recréation du service Cloud Run, dont l'URL est déclarée dans le client OAuth
+Google. Le suffixe est donc vide pour prod et appliqué aux autres
+environnements — un compromis assumé entre pureté du nommage et continuité de
+service.
+
+**Les states sont séparés par préfixe de backend.** Le bloc `backend`
+n'acceptant aucune variable, le préfixe est fourni à l'initialisation
+(`terraform init -backend-config="prefix=env/dev"`). Deux states distincts
+garantissent qu'un `apply` sur dev ne peut structurellement pas modifier la
+production.
+
+**Les ressources partagées ont un propriétaire unique.** La VM Postgres, les
+règles firewall, l'Artifact Registry et l'activation des APIs sont communs aux
+deux environnements : si les deux states tentaient de les créer, le second
+échouerait sur des ressources « déjà existantes ». Le drapeau
+`manage_shared_infra` désigne explicitement l'environnement propriétaire
+(prod) ; les autres lisent ces ressources par des *data sources*. Le mot de
+passe Postgres relève du même mécanisme : dev l'extrait du DSN de production
+au lieu d'en générer un nouveau, puisqu'il s'agit du même superutilisateur sur
+le même serveur.
 
 Aucun `terraform import` n'a été nécessaire : le projet `lifeai-devops`
 étant créé de zéro pour ce sous-projet, chaque ressource a été créée
 directement par Terraform, sans ressource préexistante à réconcilier.
+
+**Pourquoi pas de `main.tf` ?** Terraform charge **tous** les fichiers `.tf`
+d'un répertoire et construit son graphe de dépendances à partir des
+références entre ressources, pas de l'ordre ou du nom des fichiers :
+`main.tf` n'a donc aucune signification technique, c'est une convention
+issue de la *Standard Module Structure* de HashiCorp, pensée pour les
+modules et les configurations simples. Elle reste pertinente quand
+Terraform ne gère qu'une poignée de ressources — c'est d'ailleurs le cas
+dans le projet d'origine, où un `main.tf` unique suffit puisque seul le
+service Cloud Run y est décrit. Ici, avec 38 ressources réparties sur 9
+domaines, un fichier par domaine rend la navigation plus directe : on
+trouve la VM dans `database.tf` et le service dans `cloud_run.tf` plutôt
+que par défilement dans un fichier d'environ 400 lignes.
 
 ### 5.3 Détail notable : calcul de l'URL Cloud Run avant sa création
 
@@ -328,19 +384,88 @@ l'infrastructure applicative est ensuite entièrement piloté par Terraform.
 
 ## 6. Pipeline CI/CD avec GitHub Actions
 
-### 6.1 Déclencheurs
+### 6.1 Un environnement par branche
 
-Le workflow (`.github/workflows/deploy.yml`) se déclenche sur `push` vers
-`main`, filtré par chemins (uniquement si le code applicatif ou
-`terraform/**` change), plus `workflow_dispatch` pour un lancement manuel.
+Le déploiement suit le modèle de branches, chacune associée à un
+environnement :
 
-### 6.2 Les 3 jobs
-
-| Ordre | Job | Rôle |
+| Branche | Environnement | Accès |
 |---|---|---|
-| 1 | `prepare-registry` | `terraform apply -target=...` **ciblé** sur l'activation des APIs + la création du repo Artifact Registry — nécessaire *avant* que le job suivant puisse pousser une image (voir incident §8.2) |
-| 2 | `build` | Build de l'image Docker (`docker buildx`) et push vers Artifact Registry, taggée `<sha-du-commit>` + `latest`, avec cache GitHub Actions (`type=gha`) |
-| 3 | `deploy` | `terraform apply` complet — crée/actualise réellement Cloud Run, la VM, les secrets, le scheduler, avec `image_tag=<sha>` |
+| `develop` | dev | push direct — branche de travail |
+| `main` | production | pull request validée uniquement |
+
+```
+   push                    pull request                merge
+develop ──────▶ DEV        develop → main ──────▶  main ──────▶ PRODUCTION
+                           revue + plan Terraform
+```
+
+Deux propriétés en découlent. D'abord `main` **reflète la production** : ce
+qui y est fusionné est déployé, rien d'autre. Ensuite le contrôle avant
+production est une **pull request**, et non un simple bouton.
+
+C'est le point décisif du modèle. Une approbation de déploiement dans
+l'interface Actions n'affiche presque rien — « approuver ce déploiement ? ».
+Une pull request affiche le diff du code, le résultat des tests, le plan
+Terraform de production en commentaire, et permet la discussion ligne à ligne.
+À coût identique, la revue porte sur beaucoup plus d'information.
+
+Avantage secondaire : le garde-fou repose sur la protection de branche, un
+mécanisme gratuit sur tout dépôt. Les règles de protection d'environnement,
+elles, sont payantes sur dépôt privé — un contrôle qui disparaîtrait
+silencieusement si le dépôt changeait de visibilité.
+
+### 6.2 Les deux pipelines
+
+**`ci.yml`** — déclenché par un push sur `develop`, et par toute pull request
+visant `main`.
+
+| Job | Rôle |
+|---|---|
+| `lint` | `terraform fmt -check`, `terraform validate`, `tflint` |
+| `test` | `pytest` — 36 tests unitaires |
+| `security` | `checkov` sur les fichiers `.tf` |
+| `plan` | *(pull request)* `terraform plan` publié en commentaire — rien n'est appliqué |
+| `build` | *(push develop)* image Docker taggée par SHA |
+| `deploy-dev` | *(push develop)* `terraform apply` sur dev, puis vérification HTTP |
+
+Les trois portes de qualité s'exécutent en parallèle et bloquent la suite :
+`build` déclare `needs: [lint, test, security]`.
+
+**`cd-prod.yml`** — déclenché par la fusion d'une pull request dans `main` :
+vérifications rejouées, reconstruction de l'image, `terraform apply` sur
+production, vérification HTTP finale.
+
+Rejouer les vérifications sur `main` est en principe redondant, le code
+arrivant d'une PR déjà validée. C'est peu coûteux et cela garantit que `main`
+est vérifiée **pour elle-même** : une fusion mal résolue ou un push direct
+(si la protection de branche venait à être levée) ne passeraient pas au
+travers.
+
+### 6.3 Reconstruction plutôt que promotion d'artefact
+
+La fusion d'une pull request crée un **nouveau SHA**. L'image construite
+depuis `develop` ne porte donc pas l'identifiant du commit de `main`, et ne
+peut pas être retrouvée par ce seul identifiant.
+
+Trois réponses étaient possibles :
+
+| Approche | Effet |
+|---|---|
+| Fusion en rebase / fast-forward | Le SHA est conservé, promotion stricte de l'artefact — mais impose la stratégie de fusion du dépôt |
+| Résoudre l'image via le commit d'origine | Promotion préservée quelle que soit la fusion, au prix de logique supplémentaire dans le workflow |
+| **Reconstruire sur `main`** *(retenu)* | Le plus simple à lire et à expliquer |
+
+La contrepartie est réelle et assumée : la production reçoit une image
+reconstruite, et non l'artefact au bit près qui a tourné en dev. Deux builds
+du même code peuvent différer — dépendances transitives résolues à des
+versions distinctes, horodatages, ordre de couches. Le cache de layers limite
+l'écart sans le supprimer.
+
+Pour un projet où l'environnement de dev sert de validation fonctionnelle,
+c'est acceptable. Dans un contexte où l'artefact déployé doit être exactement
+celui qui a été testé — conformité, audit, certification — la fusion en rebase
+serait le choix correct.
 
 ### 6.3 Authentification
 
@@ -355,6 +480,62 @@ Les 3 variables sensibles Terraform (`twilio_account_sid`,
 d'environnement `TF_VAR_*` plutôt que par interpolation directe dans un
 argument `-var="..."` — cette dernière méthode s'est révélée dangereuse
 lorsque la valeur contient des guillemets (voir incident §8.5).
+
+---
+
+## 6 bis. Tests automatisés et portes de qualité
+
+### Tests unitaires
+
+Le périmètre testé a été choisi selon un critère simple : ce qui est testable
+**sans service externe**. Les quatre agents de scoring et le calcul du
+Nutri-Score sont des fonctions pures — `analyze(dict) -> AgentReport` — sans
+base de données, sans appel LLM et sans réseau. La suite complète s'exécute en
+moins d'une seconde.
+
+Les tests sont paramétrés sur les quatre agents : chaque règle vérifiée vaut
+pour tous, ce qui évite quatre fichiers quasi identiques. Ils couvrent le
+score attendu sur un profil sain et sur un profil dégradé, l'ordre relatif
+entre les deux, le respect des bornes 0-100, la bonne forme du rapport, et la
+robustesse aux données absentes ou aberrantes.
+
+**Ces tests ont trouvé deux défauts réels dès leur première exécution** —
+détaillés en §8.8. C'est leur meilleure justification.
+
+Un cas est délibérément **non** figé : le score produit quand toutes les
+données manquent. Les agents ne s'accordent pas sur la valeur par défaut à
+appliquer (`activity` part de zéro, les trois autres de valeurs favorables, si
+bien qu'un utilisateur sans aucune donnée est noté « en bonne santé » par
+trois agents sur quatre). Écrire un test qui assère ce comportement
+reviendrait à l'entériner ; le test vérifie donc seulement l'absence de
+plantage, et l'incohérence est documentée dans le code.
+
+### Analyse statique de l'infrastructure
+
+`checkov` analyse les fichiers `.tf` à la recherche de mauvaises pratiques de
+sécurité. Sur cette configuration : 25 contrôles réussis, 0 échec,
+3 exceptions justifiées.
+
+Deux constats ont été **corrigés** : blocage des clés SSH au niveau du projet
+(`CKV_GCP_32`) et activation du démarrage vérifié / vTPM / surveillance
+d'intégrité sur la VM (`CKV_GCP_39`).
+
+Trois ont été **acceptés**, chacun avec sa raison inscrite dans le code sous
+forme de commentaire `#checkov:skip=<ID>:<raison>` — de sorte qu'aucune
+exception ne soit muette et que tout *nouveau* constat fasse échouer la CI :
+
+| Constat | Raison de l'acceptation |
+|---|---|
+| `CKV_GCP_40` — VM avec IP publique | Nécessaire pour installer Docker et tirer l'image Postgres ; l'alternative (Cloud NAT) est facturée. Le port 5432 reste fermé à l'internet public. |
+| `CKV_GCP_38` — disques sans clé client | Chiffrement au repos déjà assuré par des clés gérées par Google ; le CSEK imposerait d'en gérer le cycle de vie sans bénéfice réel ici. |
+| `CKV_GCP_84` — registre sans clé client | Même raisonnement ; le contenu est du code applicatif public. |
+
+Un piège mérite d'être signalé, car il rendait le scan **trompeur** : sans
+l'option `--var-file`, checkov n'exécutait que 2 contrôles au lieu de 28. La
+moitié des ressources est conditionnée par `var.manage_shared_infra`, dont la
+valeur par défaut est `false` ; checkov les considérait donc comme non créées
+et rendait un rapport vert. Un scan qui ne trouve rien n'est pas
+nécessairement un scan qui prouve quelque chose.
 
 ---
 
@@ -399,8 +580,17 @@ secondes.
 disabled` lors du `docker push`.
 **Cause** : le job `build` s'exécutait avant que Terraform (job `deploy`)
 n'active l'API et ne crée le repo.
-**Résolution** : ajout du job `prepare-registry` (apply ciblé) exécuté
-avant `build`.
+**Résolution initiale** : ajout d'un job `prepare-registry` (`terraform apply
+-target` ciblé sur les APIs et le dépôt) exécuté avant `build`.
+
+**État actuel** : ce job a été retiré lors du passage à deux pipelines. Le
+registre fait partie des ressources partagées, créées par le premier `apply`
+de production — lequel relève de l'amorçage et se fait depuis un poste
+local, après `bootstrap_ci.sh` (voir README). Faire porter cet amorçage par
+la CI revenait à mêler deux préoccupations distinctes : créer
+l'infrastructure une première fois, et la maintenir à chaque commit. Sur un
+projet vierge, l'ordre reste donc contraint — il est simplement explicite et
+documenté plutôt qu'implicite dans le pipeline.
 
 ### 8.3 Pénurie de stock `e2-micro`
 **Symptôme** : `ZONE_RESOURCE_POOL_EXHAUSTED` sur `us-central1-a`, puis
@@ -448,6 +638,46 @@ utilisateurs autorisés tant que l'écran de consentement est en mode
 **Résolution** : ajout des deux éléments manquants via la Console (aucune
 API publique pour ces deux étapes — voir §10).
 
+### 8.8 Deux défauts applicatifs révélés par les premiers tests
+**Symptôme** : à leur toute première exécution, 34 tests passent et 2
+échouent.
+**Causes**, distinctes mais de forme identique :
+- `activity_agent` renvoyait un score **négatif** (−1,8) sur des valeurs
+  d'entrée négatives. Trois des quatre composantes du score n'étaient bornées
+  que par le haut (`min(x, 1.0)`) ; la quatrième, `s_sedent`, était pourtant
+  bien encadrée par `max(0, min(100, …))`.
+- `nutrition_agent` levait une `ZeroDivisionError` lorsque l'objectif
+  calorique valait 0 — atteignable, puisque ce champ est modifiable par
+  `PUT /api/profile/{user_id}`. La ligne 102 se protégeait déjà de ce cas
+  (`if cal_goal > 0 else 1.0`), mais deux divisions plus loin ne l'étaient
+  pas.
+
+Dans les deux cas, le garde-fou avait été posé à un endroit et oublié
+ailleurs — le motif classique de la correction partielle, précisément ce
+qu'une suite de tests détecte et qu'une relecture manuelle laisse passer.
+
+**Résolution** : bornes appliquées aux trois composantes manquantes, et
+pourcentage calculé une seule fois derrière la garde existante. Non-régression
+vérifiée : sur les profils normaux, les scores sont inchangés au centième
+près, les corrections ne modifiant que le traitement des cas aberrants.
+
+### 8.9 Une modification anodine allait détruire la base de production
+**Symptôme** : lors de la séparation dev/prod, le plan annonce
+`google_compute_instance.lifeai_db must be replaced`.
+**Cause** : pour créer automatiquement la base de dev, la création des bases
+avait été ajoutée au script de démarrage de la VM. Or
+`metadata_startup_script` est un attribut **ForceNew** dans le provider
+Google : toute modification entraîne la destruction et la recréation de
+l'instance — donc de son disque de démarrage, donc de toutes les bases. Un
+remplacement de secret en cascade suivait d'ailleurs, la nouvelle IP de la VM
+changeant le DSN.
+**Résolution** : script de démarrage laissé strictement intact, avertissement
+inscrit à côté du bloc concerné, et création de la base de dev traitée comme
+une opération ponctuelle par tunnel IAP (documentée dans le README).
+
+C'est l'illustration la plus nette de l'intérêt du `plan` : la modification
+paraissait anodine, sa conséquence était la perte des données de production.
+
 ---
 
 ## 9. Coûts
@@ -472,35 +702,59 @@ quotas Always Free et que le trafic Cloud Run reste faible (démo/tests).
 
 | Limite actuelle | Piste d'amélioration |
 |---|---|
-| Postgres sur VM Docker, sans backup automatique | Migration vers Cloud SQL managé (coût récurrent en échange de backups/HA) |
-| Pas d'alerte de budget configurée | Ajouter un `google_billing_budget` Terraform avec seuils d'alerte |
-| Rôles IAM du SA CI assez larges (admin par service) | Resserrer encore via des rôles custom minimalistes si le projet grandit |
-| Pas de tests automatisés dans la CI (`terraform validate`/`fmt` en étape séparée, tests applicatifs) | Ajouter un job `lint` (`terraform fmt -check`, `terraform validate`) avant `plan`/`apply` |
-| Écran de consentement OAuth en mode Testing (liste d'utilisateurs limitée) | Publier l'application si un usage au-delà des testeurs déclarés est nécessaire |
-| Un seul environnement (pas de `staging`/`prod` séparés) | Dupliquer la config Terraform avec des workspaces ou des répertoires par environnement |
-| Scheduler/monitoring : pas d'alerting sur échec du job quotidien | Ajouter une notification (email/Slack) en cas d'échec Cloud Scheduler |
+| Postgres sur VM Docker, sans sauvegarde automatique — et **partagé entre dev et prod** : une panne de la VM affecte les deux environnements | Migration vers Cloud SQL managé (sauvegardes et bascule automatiques, contre un coût récurrent) ; à défaut, un instantané de disque planifié |
+| Pas d'alerte de budget configurée | Ajouter une ressource `google_billing_budget` avec seuils d'alerte |
+| Rôles IAM du compte de service CI encore larges (administrateur par service) | Resserrer via des rôles personnalisés minimalistes si le projet grandit |
+| Couverture de test limitée aux agents de scoring — ni les routes FastAPI, ni la couche base de données, ni le pipeline ADK ne sont testés | Ajouter des tests d'intégration sur l'API (`httpx` + base éphémère) et des doublures pour les appels LLM |
+| `checkov` couvre mal `google_cloud_run_v2_service` : ses politiques ciblent surtout la v1 des ressources | Compléter par `trivy config` ou des politiques OPA/Rego maison sur les points non couverts |
+| Écran de consentement OAuth en mode *Testing* (liste d'utilisateurs limitée) | Publier l'application si un usage au-delà des testeurs déclarés devient nécessaire |
+| Le déploiement dev reste automatique et sans revue — seule la production passe par une pull request | Acceptable par construction : dev sert justement d'environnement de validation avant fusion |
+| La production reçoit une image **reconstruite**, pas l'artefact exact validé en dev (voir §6.3) | Passer à une fusion en rebase, qui conserve le SHA et permet une promotion stricte |
+| Pas d'alerte sur échec du job Cloud Scheduler quotidien | Notification (courriel ou Slack) via une politique d'alerte Cloud Monitoring |
+| Aucun retour arrière automatique : un déploiement dégradé se corrige en promouvant manuellement le commit précédent | Exploiter la répartition du trafic Cloud Run (déploiement progressif, bascule automatique sur erreurs) |
 
 ---
 
 ## 11. Conclusion
 
 Ce sous-projet transforme un déploiement manuel (scripts bash + commandes
-`gcloud` impératives) en un pipeline DevOps reproductible : infrastructure
-décrite intégralement en Terraform, déploiement continu via GitHub Actions,
-authentification sans clé (Workload Identity Federation), secrets jamais en
-clair, et isolation complète vis-à-vis du projet scolaire d'origine.
+`gcloud` impératives) en une chaîne DevOps reproductible : infrastructure
+décrite intégralement en Terraform, environnements dev et production séparés
+par des states distincts et par des branches, portes de qualité automatiques
+(formatage, lint, tests unitaires, analyse de sécurité), passage en production
+conditionné à une pull request revue, authentification sans clé, et secrets
+jamais en clair.
 
-Les incidents rencontrés pendant la mise en place (ordre du pipeline,
-disponibilité de zone, permissions IAM, quoting shell) ont tous une cause
-identifiée et une correction versionnée dans le code — la CI reste donc
-reproductible pour quiconque relance `bootstrap/bootstrap_ci.sh` puis pousse
-sur `main`.
+Les incidents rencontrés ont tous une cause identifiée et une correction
+versionnée : la chaîne reste reproductible pour quiconque relance
+`bootstrap/bootstrap_ci.sh` puis pousse sur `main`.
+
+Trois d'entre eux résument bien ce que ce travail a apporté, au-delà de
+l'automatisation elle-même.
+
+Les **tests** ont trouvé deux bugs applicatifs à leur première exécution — un
+score négatif et un plantage sur division par zéro — que des mois d'usage
+manuel n'avaient pas révélés.
+
+Le **`plan`** a intercepté une modification en apparence anodine du script de
+démarrage de la VM, dont la conséquence réelle était la destruction de la base
+de production.
+
+Le **scan de sécurité** a d'abord menti : il annonçait « aucun problème » en
+n'analysant que 2 ressources sur l'ensemble. Un outil qui ne trouve rien ne
+prouve rien tant qu'on n'a pas vérifié qu'il a réellement regardé.
+
+C'est peut-être l'enseignement principal : l'automatisation ne dispense pas de
+vérifier ce que les outils font réellement, elle rend simplement cette
+vérification systématique plutôt qu'occasionnelle.
 
 ---
 
 ## 12. Annexes
 
-- Diagramme d'architecture : [`architecture-devops.drawio`](./architecture-devops.drawio) (à ouvrir sur [app.diagrams.net](https://app.diagrams.net))
+- Diagramme d'architecture : [`architecture-devops.drawio`](./architecture-devops.drawio) — 2 onglets, à ouvrir sur [app.diagrams.net](https://app.diagrams.net)
+  - *1. Application & runtime* — le contenu du conteneur déployé et ses connexions
+  - *2. CI/CD & Infrastructure as Code* — la chaîne qui l'amène en production
 - Documentation pas-à-pas complète : [`pipeline-devops.md`](./pipeline-devops.md)
 - Repo : https://github.com/Anis-adjaoud/lifeai-devops
 - Projet GCP : `lifeai-devops`

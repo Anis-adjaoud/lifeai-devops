@@ -1,6 +1,9 @@
 # Postgres accessible uniquement depuis le VPC interne (Cloud Run inclus via
 # Direct VPC egress) — jamais exposé publiquement.
 resource "google_compute_firewall" "allow_postgres_internal" {
+  # Partagée : règle au niveau du VPC, commune à tous les environnements.
+  count = var.manage_shared_infra ? 1 : 0
+
   name        = "lifeai-allow-postgres-internal"
   project     = var.project_id
   network     = var.network
@@ -21,6 +24,8 @@ resource "google_compute_firewall" "allow_postgres_internal" {
 # start-iap-tunnel` sans exposer le port publiquement — nécessite quand même
 # le rôle IAM iap.tunnelResourceAccessor.
 resource "google_compute_firewall" "allow_postgres_iap" {
+  count = var.manage_shared_infra ? 1 : 0
+
   name        = "lifeai-allow-postgres-iap"
   project     = var.project_id
   network     = var.network

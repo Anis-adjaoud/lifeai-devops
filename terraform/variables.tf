@@ -1,3 +1,34 @@
+variable "environment" {
+  description = "Environnement cible : dev ou prod. Détermine le suffixe des noms de ressources, la base de données utilisée et le dimensionnement (voir locals.tf)."
+  type        = string
+
+  validation {
+    condition     = contains(["dev", "prod"], var.environment)
+    error_message = "environment doit valoir \"dev\" ou \"prod\"."
+  }
+}
+
+variable "manage_shared_infra" {
+  description = <<-EOT
+    Cet environnement gère-t-il les ressources PARTAGÉES entre environnements
+    (activation des APIs, Artifact Registry, règles firewall, VM Postgres) ?
+
+    Une seule ressource ne peut avoir qu'un seul propriétaire : si les deux
+    environnements tentaient de les créer, le second échouerait sur « existe
+    déjà ». Un seul environnement doit donc avoir ce drapeau à true — c'est
+    prod (voir env/prod.tfvars). Les environnements qui l'ont à false lisent
+    ces ressources via des data sources au lieu de les créer.
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "shared_dsn_secret" {
+  description = "Secret contenant le DSN de l'environnement propriétaire de la VM Postgres. Les environnements non propriétaires y lisent le mot de passe du serveur partagé (voir database.tf)."
+  type        = string
+  default     = "lifeai-database-url"
+}
+
 variable "project_id" {
   type    = string
   default = "lifeai-devops"
@@ -17,11 +48,6 @@ variable "zone" {
   # `var.region` (Cloud Run/Artifact Registry restent en us-central1).
   type    = string
   default = "us-west1-b"
-}
-
-variable "service_name" {
-  type    = string
-  default = "lifeai-api"
 }
 
 variable "artifact_repo" {

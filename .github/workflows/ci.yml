@@ -1,0 +1,241 @@
+name: CI · qualité, build et déploiement dev
+
+# Premier pipeline. Il tourne sur la branche de travail `develop` et sur les
+# pull requests qui visent `main`.
+#
+#   push sur develop      → valide, construit, déploie en DÉV
+#   PR develop → main     → valide et publie le plan Terraform, sans rien appliquer
+#
+# Le déploiement en production est un pipeline distinct (cd-prod.yml),
+# déclenché par la fusion de la pull request.
+on:
+  push:
+    branches: [develop]
+    paths:
+      - "api.py"
+      - "agentic/**"
+      - "nutrition/**"
+      - "frontend_web/**"
+      - "data/foods_table.xlsx"
+      - "output/models/**"
+      - "tests/**"
+      - "Dockerfile"
+      - "requirements.txt"
+      - "requirements-dev.txt"
+      - "terraform/**"
+      - ".github/workflows/**"
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+
+env:
+  REGION: us-central1
+  IMAGE: us-central1-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/lifeai/lifeai-api
+  TF_VAR_twilio_account_sid: ${{ secrets.TWILIO_ACCOUNT_SID }}
+  TF_VAR_twilio_auth_token: ${{ secrets.TWILIO_AUTH_TOKEN }}
+  TF_VAR_oauth_client_json: ${{ secrets.OAUTH_CLIENT_JSON }}
+
+permissions:
+  contents: read
+  id-token: write
+  pull-requests: write # pour publier le plan en commentaire de la PR
+
+jobs:
+  # ── Portes de qualité — en parallèle, bloquantes pour la suite ─────────────
+
+  lint:
+    name: Qualité Terraform
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: terraform
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~1.12"
+
+      - name: Formatage
+        run: terraform fmt -check -recursive -diff
+
+      - name: Initialisation sans backend
+        # La validation syntaxique n'a besoin d'aucun state : pas
+        # d'authentification GCP requise à ce stade.
+        run: terraform init -backend=false -input=false
+
+      - name: Validation
+        run: terraform validate
+
+      - uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: latest
+
+      - name: tflint
+        run: |
+          tflint --init
+          tflint --recursive
+
+  test:
+    name: Tests unitaires
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Dépendances de test
+        # requirements-dev.txt seulement : requirements.txt embarque torch et
+        # sentence-transformers (~2 Go), inutiles aux tests unitaires.
+        run: pip install -r requirements-dev.txt
+
+      - name: pytest
+        run: pytest
+
+  security:
+    name: Scan de sécurité IaC
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: checkov
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: terraform/
+          framework: terraform
+          # var_file est INDISPENSABLE : la moitié des ressources est
+          # conditionnée par var.manage_shared_infra, dont le défaut est false.
+          # Sans ce fichier, checkov les ignore et rend un rapport vert
+          # trompeur — mesuré : 2 contrôles sans var_file, 28 avec.
+          var_file: terraform/env/prod.tfvars
+          quiet: true
+          output_format: cli
+          # Les constats acceptés portent un commentaire
+          # `#checkov:skip=<ID>:<raison>` dans les .tf : aucune exception n'est
+          # muette, et tout NOUVEAU constat fait échouer le job.
+          soft_fail: false
+
+  # ── Pull request vers main : on planifie, on n'applique rien ───────────────
+
+  plan:
+    name: Plan Terraform (production)
+    if: github.event_name == 'pull_request'
+    needs: [lint, test, security]
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: terraform
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~1.12"
+
+      - run: terraform init -reconfigure -input=false -backend-config="prefix=env/prod"
+
+      - name: Plan
+        # -lock=false : ce plan est consultatif et ne doit pas bloquer un
+        # déploiement de production qui tournerait au même moment.
+        run: |
+          terraform plan -no-color -lock=false \
+            -var-file=env/prod.tfvars \
+            -var="image_tag=${{ github.event.pull_request.head.sha }}" \
+            | tee plan.txt
+
+      - name: Publier le plan en commentaire de la PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const plan = fs.readFileSync('terraform/plan.txt', 'utf8');
+            const extrait = plan.length > 60000
+              ? plan.slice(0, 60000) + '\n\n… plan tronqué, voir les logs du job.'
+              : plan;
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `### Plan Terraform — production\n\nCe que la fusion de cette PR appliquera en production. **Rien n'est appliqué à ce stade.**\n\n<details><summary>Déplier le plan</summary>\n\n\`\`\`hcl\n${extrait}\n\`\`\`\n\n</details>`
+            });
+
+  # ── Push sur develop : construction puis déploiement en dev ────────────────
+
+  build:
+    name: Construction de l'image
+    if: github.event_name != 'pull_request'
+    needs: [lint, test, security]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - run: gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ github.sha }}
+            ${{ env.IMAGE }}:dev
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy-dev:
+    name: Déploiement dev
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: development
+      url: ${{ steps.sortie.outputs.service_url }}
+    defaults:
+      run:
+        working-directory: terraform
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~1.12"
+
+      - run: terraform init -reconfigure -input=false -backend-config="prefix=env/dev"
+
+      - name: Apply (dev)
+        run: |
+          terraform apply -auto-approve \
+            -var-file=env/dev.tfvars \
+            -var="project_id=${{ secrets.GCP_PROJECT_ID }}" \
+            -var="image_tag=${{ github.sha }}"
+
+      - id: sortie
+        run: echo "service_url=$(terraform output -raw service_url)" >> "$GITHUB_OUTPUT"
+
+      - name: Le service dev répond-il ?
+        run: |
+          url=$(terraform output -raw service_url)
+          code=$(curl -s -o /dev/null -w '%{http_code}' --retry 5 --retry-delay 10 "$url")
+          echo "$url -> HTTP $code"
+          test "$code" = "200" || { echo "Le service dev ne répond pas correctement."; exit 1; }

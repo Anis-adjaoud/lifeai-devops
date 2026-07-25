@@ -3,15 +3,16 @@
 # poule/œuf pour OAUTH_REDIRECT_URI (contrairement à l'ancien script bash qui
 # devait déployer une première fois avec un placeholder localhost).
 locals {
-  service_url         = "https://${var.service_name}-${data.google_project.this.number}.${var.region}.run.app"
-  oauth_redirect_uri  = "${local.service_url}/auth/callback"
+  service_url        = "https://${local.service_name}-${data.google_project.this.number}.${var.region}.run.app"
+  oauth_redirect_uri = "${local.service_url}/auth/callback"
 }
 
 resource "google_cloud_run_v2_service" "lifeai_api" {
-  name     = var.service_name
+  name     = local.service_name
   project  = var.project_id
   location = var.region
   ingress  = "INGRESS_TRAFFIC_ALL"
+  labels   = local.labels
 
   template {
     service_account                  = data.google_compute_default_service_account.runtime.email
@@ -20,7 +21,7 @@ resource "google_cloud_run_v2_service" "lifeai_api" {
 
     scaling {
       min_instance_count = 0
-      max_instance_count = 3
+      max_instance_count = local.env.max_instances
     }
 
     vpc_access {
@@ -32,7 +33,7 @@ resource "google_cloud_run_v2_service" "lifeai_api" {
     }
 
     containers {
-      image = "${var.region}-docker.pkg.dev/${var.project_id}/${var.artifact_repo}/${var.service_name}:${var.image_tag}"
+      image = "${var.region}-docker.pkg.dev/${var.project_id}/${var.artifact_repo}/lifeai-api:${var.image_tag}"
 
       resources {
         limits = {
@@ -53,8 +54,8 @@ resource "google_cloud_run_v2_service" "lifeai_api" {
           port = 8080
         }
         failure_threshold = 1
-        period_seconds     = 240
-        timeout_seconds    = 240
+        period_seconds    = 240
+        timeout_seconds   = 240
       }
 
       volume_mounts {
@@ -62,6 +63,10 @@ resource "google_cloud_run_v2_service" "lifeai_api" {
         mount_path = "/secrets"
       }
 
+      env {
+        name  = "ENVIRONMENT"
+        value = var.environment
+      }
       env {
         name  = "GOOGLE_CLOUD_PROJECT"
         value = var.project_id
@@ -103,7 +108,7 @@ resource "google_cloud_run_v2_service" "lifeai_api" {
         name = "DATABASE_URL"
         value_source {
           secret_key_ref {
-            secret  = google_secret_manager_secret.this["lifeai-database-url"].secret_id
+            secret  = google_secret_manager_secret.this["database-url"].secret_id
             version = "latest"
           }
         }
@@ -112,7 +117,7 @@ resource "google_cloud_run_v2_service" "lifeai_api" {
         name = "TWILIO_ACCOUNT_SID"
         value_source {
           secret_key_ref {
-            secret  = google_secret_manager_secret.this["lifeai-twilio-account-sid"].secret_id
+            secret  = google_secret_manager_secret.this["twilio-account-sid"].secret_id
             version = "latest"
           }
         }
@@ -121,7 +126,7 @@ resource "google_cloud_run_v2_service" "lifeai_api" {
         name = "TWILIO_AUTH_TOKEN"
         value_source {
           secret_key_ref {
-            secret  = google_secret_manager_secret.this["lifeai-twilio-auth-token"].secret_id
+            secret  = google_secret_manager_secret.this["twilio-auth-token"].secret_id
             version = "latest"
           }
         }
@@ -130,7 +135,7 @@ resource "google_cloud_run_v2_service" "lifeai_api" {
         name = "SCHEDULER_SECRET"
         value_source {
           secret_key_ref {
-            secret  = google_secret_manager_secret.this["lifeai-scheduler-secret"].secret_id
+            secret  = google_secret_manager_secret.this["scheduler-secret"].secret_id
             version = "latest"
           }
         }
@@ -139,7 +144,7 @@ resource "google_cloud_run_v2_service" "lifeai_api" {
         name = "SESSION_SECRET"
         value_source {
           secret_key_ref {
-            secret  = google_secret_manager_secret.this["lifeai-session-secret"].secret_id
+            secret  = google_secret_manager_secret.this["session-secret"].secret_id
             version = "latest"
           }
         }
@@ -149,7 +154,7 @@ resource "google_cloud_run_v2_service" "lifeai_api" {
     volumes {
       name = "oauth-client-json"
       secret {
-        secret = google_secret_manager_secret.this["lifeai-oauth-client-json"].secret_id
+        secret = google_secret_manager_secret.this["oauth-client-json"].secret_id
         items {
           path    = "google_client_secrets.json"
           version = "latest"
