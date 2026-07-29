@@ -364,10 +364,11 @@ Déclenché par toute pull request visant `main` (et manuellement via
 | `lint` | `terraform fmt -check`, `terraform validate`, `tflint` |
 | `test` | `pytest` — 36 tests sur les agents de scoring et le Nutri-Score |
 | `security` | `checkov` sur les fichiers `.tf` |
-| `plan` | *(pull request uniquement)* `terraform plan` publié en commentaire de la PR — **rien n'est appliqué** |
+| `plan` | *(pull request uniquement)* `terraform plan -out=tfplan`, publié en commentaire de la PR et **sauvegardé en artefact** (`tfplan-pr-<numéro>`) — **rien n'est appliqué** |
 
 Le pipeline s'arrête donc au plan : il montre ce que la fusion changera en
-production, sans rien modifier.
+production, sans rien modifier. L'artefact `tfplan` est ce que `cd-prod.yml`
+appliquera plus tard, tel quel.
 
 **2. `cd-dev.yml` — déploiement dev**
 
@@ -386,16 +387,18 @@ Déclenché par la fusion d'une pull request dans `main`.
 | Job | Rôle |
 |---|---|
 | `verifier` | Rejoue tests, lint et scan de sécurité sur `main` |
-| `build` | Reconstruit l'image depuis le commit de `main` |
-| `deploy-prod` | `terraform apply` sur prod, puis vérification HTTP |
+| `resolve-pr` | Retrouve la pull request fusionnée dans le commit qui a déclenché ce push (via l'API GitHub `commits/{sha}/pulls`, quelle que soit la stratégie de fusion) — en tire son numéro et le SHA de sa tête |
+| `build` | Ne reconstruit rien : ajoute le tag `:latest` à l'image déjà construite et poussée par `cd-dev.yml` pour ce même commit |
+| `deploy-prod` | Télécharge l'artefact `tfplan-pr-<numéro>` produit par `ci.yml`, puis `terraform apply tfplan` — sans repasser aucune variable — puis vérification HTTP |
 
-> **Reconstruction plutôt que promotion.** La fusion crée un nouveau SHA :
-> l'image construite depuis `develop` ne porte pas le même identifiant que le
-> commit de `main`. La production reçoit donc une image reconstruite, et non
-> l'artefact au bit près qui a tourné en dev. C'est le compromis retenu pour
-> la lisibilité ; le cache de layers rend les deux builds très proches.
-> L'alternative — fusion en rebase, qui conserve le SHA — permettrait une
-> promotion stricte.
+> **Promotion, pas reconstruction.** L'image qui tourne en production est,
+> au bit près, celle qui a tourné en dev — jamais rebuild. Et le plan
+> Terraform appliqué est exactement celui que la CI a calculé et qu'un
+> humain a revu dans la PR, jamais recalculé au moment du déploiement.
+> `terraform apply <fichier-de-plan>` interdit d'ailleurs de repasser des
+> `-var` : impossible donc de faire varier `image_tag` à l'apply si l'on
+> veut appliquer le plan tel quel — c'est cette contrainte qui a motivé
+> l'abandon de la reconstruction en prod.
 
 Auth GCP **sans clé de service account** : Workload Identity Federation — le
 dépôt s'authentifie via OIDC auprès du service account
