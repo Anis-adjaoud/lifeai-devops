@@ -126,20 +126,24 @@ jobs:
       - run: terraform init -reconfigure -input=false -backend-config="prefix=env/prod"
 
       - name: Plan
-        # -lock=false : ce plan est consultatif et ne doit pas bloquer un
-        # déploiement de production qui tournerait au même moment.
+        # -lock=false : la lecture du state pour ce plan ne doit pas bloquer
+        # un déploiement de production qui tournerait au même moment. Le
+        # fichier binaire produit (tfplan) est ce qui sera réellement appliqué
+        # par la CD : si le state a changé entre-temps, `terraform apply
+        # tfplan` le détectera et échouera plutôt que d'appliquer un plan
+        # périmé.
         run: |
           terraform plan -no-color -lock=false \
             -var-file=env/prod.tfvars \
             -var="image_tag=${{ github.event.pull_request.head.sha }}" \
-            | tee plan.txt
+            -out=tfplan
 
       - name: Publier le plan en commentaire de la PR
         uses: actions/github-script@v7
         with:
           script: |
-            const fs = require('fs');
-            const plan = fs.readFileSync('terraform/plan.txt', 'utf8');
+            const { execSync } = require('child_process');
+            const plan = execSync('terraform show -no-color tfplan', { cwd: 'terraform', maxBuffer: 1024 * 1024 * 20 }).toString();
             const extrait = plan.length > 60000
               ? plan.slice(0, 60000) + '\n\n… plan tronqué, voir les logs du job.'
               : plan;
@@ -147,5 +151,14 @@ jobs:
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: `### Plan Terraform — production\n\nCe que la fusion de cette PR appliquera en production. **Rien n'est appliqué à ce stade.**\n\n<details><summary>Déplier le plan</summary>\n\n\`\`\`hcl\n${extrait}\n\`\`\`\n\n</details>`
+              body: `### Plan Terraform — production\n\nCe que la fusion de cette PR appliquera en production. **Rien n'est appliqué à ce stade** — la CD (\`cd-prod.yml\`) appliquera ce plan exact après fusion.\n\n<details><summary>Déplier le plan</summary>\n\n\`\`\`hcl\n${extrait}\n\`\`\`\n\n</details>`
             });
+
+      - name: Transmettre le plan à la CD
+        # Nommé par numéro de PR : c'est ce que la CD utilisera pour
+        # retrouver ce plan précis une fois la PR fusionnée dans main.
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-pr-${{ github.event.pull_request.number }}
+          path: terraform/tfplan
+          retention-days: 14
