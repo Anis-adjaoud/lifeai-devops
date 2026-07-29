@@ -415,10 +415,10 @@ mécanisme gratuit sur tout dépôt. Les règles de protection d'environnement,
 elles, sont payantes sur dépôt privé — un contrôle qui disparaîtrait
 silencieusement si le dépôt changeait de visibilité.
 
-### 6.2 Les deux pipelines
+### 6.2 Les trois pipelines
 
-**`ci.yml`** — déclenché par un push sur `develop`, et par toute pull request
-visant `main`.
+**`ci.yml`** — déclenché par toute pull request visant `main` (et
+manuellement via `workflow_dispatch`).
 
 | Job | Rôle |
 |---|---|
@@ -426,21 +426,23 @@ visant `main`.
 | `test` | `pytest` — 36 tests unitaires |
 | `security` | `checkov` sur les fichiers `.tf` |
 | `plan` | *(pull request)* `terraform plan` publié en commentaire — rien n'est appliqué |
-| `build` | *(push develop)* image Docker taggée par SHA |
-| `deploy-dev` | *(push develop)* `terraform apply` sur dev, puis vérification HTTP |
 
 Les trois portes de qualité s'exécutent en parallèle et bloquent la suite :
-`build` déclare `needs: [lint, test, security]`.
+`plan` déclare `needs: [lint, test, security]`.
+
+**`cd-dev.yml`** — déclenché par un push sur `develop`, sans revue de PR :
+vérifications (lint, tests, `checkov` sur `env/dev.tfvars`), construction de
+l'image, `terraform apply` sur dev, vérification HTTP.
 
 **`cd-prod.yml`** — déclenché par la fusion d'une pull request dans `main` :
 vérifications rejouées, reconstruction de l'image, `terraform apply` sur
 production, vérification HTTP finale.
 
-Rejouer les vérifications sur `main` est en principe redondant, le code
-arrivant d'une PR déjà validée. C'est peu coûteux et cela garantit que `main`
-est vérifiée **pour elle-même** : une fusion mal résolue ou un push direct
-(si la protection de branche venait à être levée) ne passeraient pas au
-travers.
+Rejouer les vérifications sur `develop` et sur `main`, plutôt que de
+dépendre du résultat de `ci.yml`, est en principe redondant — le code arrive
+le plus souvent d'un état déjà vérifié. C'est peu coûteux, et cela garantit
+que chaque branche déployée est vérifiée **pour elle-même** : un push direct
+ou un enchaînement inhabituel de commits ne passeraient pas au travers.
 
 ### 6.3 Reconstruction plutôt que promotion d'artefact
 

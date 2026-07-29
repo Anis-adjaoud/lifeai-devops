@@ -1,36 +1,19 @@
-name: CI · qualité, build et déploiement dev
+name: CI · qualité et plan Terraform
 
-# Premier pipeline. Il tourne sur la branche de travail `develop` et sur les
-# pull requests qui visent `main`.
+# Pipeline de vérification. Il tourne sur les pull requests qui visent `main`,
+# et peut être relancé manuellement.
 #
-#   push sur develop      → valide, construit, déploie en DÉV
 #   PR develop → main     → valide et publie le plan Terraform, sans rien appliquer
 #
-# Le déploiement en production est un pipeline distinct (cd-prod.yml),
-# déclenché par la fusion de la pull request.
+# Le déploiement en dev est un pipeline distinct (cd-dev.yml), déclenché par
+# le push sur `develop`. Le déploiement en production est également un
+# pipeline distinct (cd-prod.yml), déclenché par la fusion de la pull request.
 on:
-  push:
-    branches: [develop]
-    paths:
-      - "api.py"
-      - "agentic/**"
-      - "nutrition/**"
-      - "frontend_web/**"
-      - "data/foods_table.xlsx"
-      - "output/models/**"
-      - "tests/**"
-      - "Dockerfile"
-      - "requirements.txt"
-      - "requirements-dev.txt"
-      - "terraform/**"
-      - ".github/workflows/**"
   pull_request:
     branches: [main]
   workflow_dispatch: {}
 
 env:
-  REGION: us-central1
-  IMAGE: us-central1-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/lifeai/lifeai-api
   TF_VAR_twilio_account_sid: ${{ secrets.TWILIO_ACCOUNT_SID }}
   TF_VAR_twilio_auth_token: ${{ secrets.TWILIO_AUTH_TOKEN }}
   TF_VAR_oauth_client_json: ${{ secrets.OAUTH_CLIENT_JSON }}
@@ -166,76 +149,3 @@ jobs:
               repo: context.repo.repo,
               body: `### Plan Terraform — production\n\nCe que la fusion de cette PR appliquera en production. **Rien n'est appliqué à ce stade.**\n\n<details><summary>Déplier le plan</summary>\n\n\`\`\`hcl\n${extrait}\n\`\`\`\n\n</details>`
             });
-
-  # ── Push sur develop : construction puis déploiement en dev ────────────────
-
-  build:
-    name: Construction de l'image
-    if: github.event_name != 'pull_request'
-    needs: [lint, test, security]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: google-github-actions/auth@v2
-        with:
-          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
-
-      - uses: google-github-actions/setup-gcloud@v2
-
-      - run: gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
-
-      - uses: docker/setup-buildx-action@v3
-
-      - uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          tags: |
-            ${{ env.IMAGE }}:${{ github.sha }}
-            ${{ env.IMAGE }}:dev
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-  deploy-dev:
-    name: Déploiement dev
-    if: github.event_name != 'pull_request'
-    needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: development
-      url: ${{ steps.sortie.outputs.service_url }}
-    defaults:
-      run:
-        working-directory: terraform
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: google-github-actions/auth@v2
-        with:
-          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
-
-      - uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: "~1.12"
-
-      - run: terraform init -reconfigure -input=false -backend-config="prefix=env/dev"
-
-      - name: Apply (dev)
-        run: |
-          terraform apply -auto-approve \
-            -var-file=env/dev.tfvars \
-            -var="project_id=${{ secrets.GCP_PROJECT_ID }}" \
-            -var="image_tag=${{ github.sha }}"
-
-      - id: sortie
-        run: echo "service_url=$(terraform output -raw service_url)" >> "$GITHUB_OUTPUT"
-
-      - name: Le service dev répond-il ?
-        run: |
-          url=$(terraform output -raw service_url)
-          code=$(curl -s -o /dev/null -w '%{http_code}' --retry 5 --retry-delay 10 "$url")
-          echo "$url -> HTTP $code"
-          test "$code" = "200" || { echo "Le service dev ne répond pas correctement."; exit 1; }
