@@ -4,22 +4,24 @@ name: CD · déploiement dev
 # travail. Pas de revue de pull request ici : `develop` sert justement
 # d'environnement de validation avant l'ouverture d'une PR vers `main` (voir
 # ci.yml, qui prend le relais sur cette PR, et cd-prod.yml pour la fusion).
+#
+# AUCUN filtre `paths:` ici, volontairement. Ce pipeline est le seul à
+# construire des images, et il les tague avec le SHA du commit. Toute la
+# promotion vers la production repose sur cet invariant : « chaque commit de
+# `develop` possède une image `lifeai-api:<sha>` dans Artifact Registry ».
+# ci.yml fige `image_tag = <SHA du head de la PR>` dans le plan Terraform, et
+# cd-prod.yml se contente de retaguer cette image en `:latest` — ni l'un ni
+# l'autre ne sait reconstruire.
+#
+# Un filtre `paths:` casse cet invariant en silence : un commit de fusion
+# `main` → `develop` (resynchronisation courante) ne touche aucun fichier, donc
+# aucun chemin ne correspond, donc aucune image n'est construite. La PR
+# suivante vers `main` échoue alors en CD sur un `NOT_FOUND` Artifact Registry.
+# Le coût d'un build inutile sur un commit de documentation est très inférieur
+# à celui d'une production bloquée.
 on:
   push:
     branches: [develop]
-    paths:
-      - "api.py"
-      - "agentic/**"
-      - "nutrition/**"
-      - "frontend_web/**"
-      - "data/foods_table.xlsx"
-      - "output/models/**"
-      - "tests/**"
-      - "Dockerfile"
-      - "requirements.txt"
-      - "requirements-dev.txt"
-      - "terraform/**"
-      - ".github/workflows/**"
 
   # Permet de redéployer `develop` à l'identique, sans nouveau commit.
   workflow_dispatch: {}
