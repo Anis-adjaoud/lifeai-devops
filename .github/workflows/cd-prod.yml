@@ -44,44 +44,14 @@ jobs:
   # redondant — le code arrive d'une PR déjà validée — mais peu coûteux, et
   # cela garantit que `main` est vérifié pour lui-même : une fusion mal
   # résolue ou un push direct ne passeraient pas au travers.
-  verifier:
-    name: Vérifications sur main
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: pip
-
-      - run: pip install -r requirements-dev.txt
-      - run: pytest
-
-      - uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: "~1.12"
-
-      - name: Formatage et validation Terraform
-        working-directory: terraform
-        run: |
-          terraform fmt -check -recursive
-          terraform init -backend=false -input=false
-          terraform validate
-
-      - name: checkov
-        uses: bridgecrewio/checkov-action@v12
-        with:
-          directory: terraform/
-          framework: terraform
-          var_file: terraform/env/prod.tfvars
-          quiet: true
-          output_format: cli
-          soft_fail: false
+  qualite:
+    uses: ./.github/workflows/qualite.yml
+    with:
+      tfvars: terraform/env/prod.tfvars
 
   resolve-pr:
     name: Retrouver la PR fusionnée
-    needs: verifier
+    needs: qualite
     runs-on: ubuntu-latest
     outputs:
       pr_number: ${{ steps.pr.outputs.number }}
