@@ -8,6 +8,13 @@ name: CD · déploiement production
 # là, à condition que la protection de branche soit configurée (voir README).
 #
 # `main` reflète ainsi l'état réel de la production.
+#
+# Ce pipeline n'applique jamais un plan qu'il a lui-même recalculé : il
+# retrouve la PR fusionnée dans le commit qui a déclenché ce push, télécharge
+# le fichier de plan que `ci.yml` a produit pour cette PR (job `plan`), et
+# l'applique tel quel (`terraform apply tfplan`). Ce qui a été revu dans la PR
+# est donc, au bit près, ce qui est appliqué en production — sans nouveau
+# calcul, sans nouvelle image reconstruite.
 on:
   push:
     branches: [main]
@@ -36,6 +43,8 @@ env:
 permissions:
   contents: read
   id-token: write
+  actions: read # pour retrouver le run CI et télécharger l'artefact du plan
+  pull-requests: read # pour identifier la PR associée au commit fusionné
 
 jobs:
   # Les mêmes portes qu'en CI sont rejouées sur `main`. C'est en principe
@@ -77,13 +86,37 @@ jobs:
           output_format: cli
           soft_fail: false
 
-  build:
-    name: Construction de l'image de production
+  resolve-pr:
+    name: Retrouver la PR fusionnée
     needs: verifier
     runs-on: ubuntu-latest
+    outputs:
+      pr_number: ${{ steps.pr.outputs.number }}
+      head_sha: ${{ steps.pr.outputs.head_sha }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Identifier la PR associée à ce commit
+        # Fonctionne quelle que soit la stratégie de fusion (merge commit,
+        # squash, rebase) : GitHub associe toujours le commit résultant à la PR
+        # d'origine via cette API.
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          pr_json=$(gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/pulls" --jq '.[0]')
+          number=$(echo "$pr_json" | jq -r '.number // empty')
+          head_sha=$(echo "$pr_json" | jq -r '.head.sha // empty')
+          if [ -z "$number" ] || [ -z "$head_sha" ]; then
+            echo "Aucune PR associée au commit ${{ github.sha }} : impossible de retrouver le plan Terraform validé." >&2
+            exit 1
+          fi
+          echo "number=$number" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
 
+  build:
+    name: Promouvoir l'image de dev en production
+    needs: resolve-pr
+    runs-on: ubuntu-latest
+    steps:
       - uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
@@ -91,29 +124,21 @@ jobs:
 
       - uses: google-github-actions/setup-gcloud@v2
 
-      - run: gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
-
-      - uses: docker/setup-buildx-action@v3
-
-      # L'image est reconstruite à partir du commit de `main`, plutôt que
-      # promue depuis dev. La fusion crée un nouveau SHA, donc l'image
-      # construite sur `develop` ne porte pas le même identifiant.
-      # Contrepartie assumée : la production reçoit une image reconstruite, et
-      # non l'artefact au bit près qui a tourné en dev. Le cache de layers
-      # rend malgré tout les deux builds très proches.
-      - uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          tags: |
-            ${{ env.IMAGE }}:${{ github.sha }}
-            ${{ env.IMAGE }}:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+      # Build once, deploy everywhere : l'image a déjà été construite et
+      # poussée par cd-dev.yml quand ce commit (le head de la PR) a été
+      # poussé sur `develop`. On ne la reconstruit pas — on lui ajoute juste
+      # le tag :latest. C'est la même image, au bit près, qui a tourné en dev
+      # et qui tourne maintenant en prod ; c'est aussi ce que le plan
+      # Terraform de la CI référence (image_tag = SHA de la PR).
+      - name: Ajouter le tag :latest à l'image déjà construite
+        run: |
+          gcloud artifacts docker tags add \
+            "${{ env.IMAGE }}:${{ needs.resolve-pr.outputs.head_sha }}" \
+            "${{ env.IMAGE }}:latest"
 
   deploy-prod:
     name: Déploiement production
-    needs: build
+    needs: [resolve-pr, build]
     runs-on: ubuntu-latest
     environment:
       name: production
@@ -135,16 +160,24 @@ jobs:
 
       - run: terraform init -reconfigure -input=false -backend-config="prefix=env/prod"
 
-      - name: Apply (production)
+      - name: Récupérer le plan validé par la CI
         env:
-          TF_VAR_twilio_account_sid: ${{ secrets.TWILIO_ACCOUNT_SID }}
-          TF_VAR_twilio_auth_token: ${{ secrets.TWILIO_AUTH_TOKEN }}
-          TF_VAR_oauth_client_json: ${{ secrets.OAUTH_CLIENT_JSON }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          terraform apply -auto-approve \
-            -var-file=env/prod.tfvars \
-            -var="project_id=${{ secrets.GCP_PROJECT_ID }}" \
-            -var="image_tag=${{ github.sha }}"
+          run_id=$(gh api "repos/${{ github.repository }}/actions/runs?head_sha=${{ needs.resolve-pr.outputs.head_sha }}" \
+            --jq '[.workflow_runs[] | select(.name=="CI · qualité et plan Terraform" and .conclusion=="success")] | first | .id')
+          if [ -z "$run_id" ] || [ "$run_id" = "null" ]; then
+            echo "Aucun run CI réussi trouvé pour le SHA ${{ needs.resolve-pr.outputs.head_sha }}." >&2
+            exit 1
+          fi
+          gh run download "$run_id" -n "tfplan-pr-${{ needs.resolve-pr.outputs.pr_number }}" --dir .
+
+      - name: Apply (production)
+        # Applique le plan tel quel : aucune variable n'est repassée, tout
+        # est déjà figé dans le fichier tfplan récupéré ci-dessus. Si le state
+        # a changé depuis que la CI a calculé ce plan, Terraform le détecte
+        # et échoue plutôt que d'appliquer un plan périmé.
+        run: terraform apply tfplan
 
       - id: sortie
         run: echo "service_url=$(terraform output -raw service_url)" >> "$GITHUB_OUTPUT"
