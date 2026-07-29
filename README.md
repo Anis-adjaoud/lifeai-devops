@@ -212,7 +212,8 @@ L'application est accessible sur **http://localhost:5173**
 │   └── migrate_state_to_envs.sh    # One-shot : migration vers les states par environnement
 │
 ├── .github/workflows/
-│   ├── ci.yml                      # Qualité → build → déploiement dev
+│   ├── ci.yml                      # Qualité + plan Terraform (pull request vers main)
+│   ├── cd-dev.yml                  # Build + déploiement dev (push sur develop)
 │   └── cd-prod.yml                 # Promotion en production (approbation requise)
 │
 └── docs/                           # Dossier technique, schéma d'architecture, slides
@@ -351,11 +352,12 @@ déployé.
 
 ### Pipelines CI/CD
 
-Deux pipelines distincts, séparés par la **revue de pull request**.
+Trois pipelines, séparés par la **revue de pull request**.
 
-**1. `ci.yml` — qualité, build et déploiement dev**
+**1. `ci.yml` — qualité et plan Terraform**
 
-Déclenché par un push sur `develop`, et par toute pull request visant `main`.
+Déclenché par toute pull request visant `main` (et manuellement via
+`workflow_dispatch`).
 
 | Job | Rôle |
 |---|---|
@@ -363,13 +365,21 @@ Déclenché par un push sur `develop`, et par toute pull request visant `main`.
 | `test` | `pytest` — 36 tests sur les agents de scoring et le Nutri-Score |
 | `security` | `checkov` sur les fichiers `.tf` |
 | `plan` | *(pull request uniquement)* `terraform plan` publié en commentaire de la PR — **rien n'est appliqué** |
-| `build` | *(push develop)* image Docker taggée par SHA, poussée sur Artifact Registry |
-| `deploy-dev` | *(push develop)* `terraform apply` sur dev, puis vérification HTTP |
 
-Sur une pull request, le pipeline s'arrête donc au plan : il montre ce que la
-fusion changera en production, sans rien modifier.
+Le pipeline s'arrête donc au plan : il montre ce que la fusion changera en
+production, sans rien modifier.
 
-**2. `cd-prod.yml` — déploiement production**
+**2. `cd-dev.yml` — déploiement dev**
+
+Déclenché par un push sur `develop` — la branche de travail, sans revue de PR.
+
+| Job | Rôle |
+|---|---|
+| `verifier` | Rejoue lint, tests et scan de sécurité (`checkov` sur `env/dev.tfvars`) |
+| `build` | Image Docker taggée par SHA, poussée sur Artifact Registry |
+| `deploy-dev` | `terraform apply` sur dev, puis vérification HTTP |
+
+**3. `cd-prod.yml` — déploiement production**
 
 Déclenché par la fusion d'une pull request dans `main`.
 
