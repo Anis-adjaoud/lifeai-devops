@@ -1,5 +1,7 @@
-# Bucket créé par bootstrap/bootstrap_ci.sh avant le premier `terraform init`.
-# Nom en dur : un seul environnement (pas de multi-env ici).
+# Bucket créé par bootstrap/bootstrap_ci.sh avant le premier `terraform init`
+# (Terraform ne peut pas créer le coffre où il range son propre state).
+# Nom du bucket en dur, car il est unique au projet ; la séparation dev/prod se
+# fait à l'intérieur, par préfixe — voir le commentaire du bloc `backend`.
 terraform {
   required_version = ">= 1.5"
 
