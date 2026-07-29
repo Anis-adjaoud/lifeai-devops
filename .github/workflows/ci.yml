@@ -25,88 +25,20 @@ permissions:
 
 jobs:
   # ── Portes de qualité — en parallèle, bloquantes pour la suite ─────────────
-
-  lint:
-    name: Qualité Terraform
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: terraform
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: "~1.12"
-
-      - name: Formatage
-        run: terraform fmt -check -recursive -diff
-
-      - name: Initialisation sans backend
-        # La validation syntaxique n'a besoin d'aucun state : pas
-        # d'authentification GCP requise à ce stade.
-        run: terraform init -backend=false -input=false
-
-      - name: Validation
-        run: terraform validate
-
-      - uses: terraform-linters/setup-tflint@v4
-        with:
-          tflint_version: latest
-
-      - name: tflint
-        run: |
-          tflint --init
-          tflint --recursive
-
-  test:
-    name: Tests unitaires
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: pip
-
-      - name: Dépendances de test
-        # requirements-dev.txt seulement : requirements.txt embarque torch et
-        # sentence-transformers (~2 Go), inutiles aux tests unitaires.
-        run: pip install -r requirements-dev.txt
-
-      - name: pytest
-        run: pytest
-
-  security:
-    name: Scan de sécurité IaC
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: checkov
-        uses: bridgecrewio/checkov-action@v12
-        with:
-          directory: terraform/
-          framework: terraform
-          # var_file est INDISPENSABLE : la moitié des ressources est
-          # conditionnée par var.manage_shared_infra, dont le défaut est false.
-          # Sans ce fichier, checkov les ignore et rend un rapport vert
-          # trompeur — mesuré : 2 contrôles sans var_file, 28 avec.
-          var_file: terraform/env/prod.tfvars
-          quiet: true
-          output_format: cli
-          # Les constats acceptés portent un commentaire
-          # `#checkov:skip=<ID>:<raison>` dans les .tf : aucune exception n'est
-          # muette, et tout NOUVEAU constat fait échouer le job.
-          soft_fail: false
+  #
+  # Définies dans qualite.yml et partagées avec cd-dev.yml et cd-prod.yml.
+  # La PR vise la production : c'est donc prod.tfvars que checkov doit scanner.
+  qualite:
+    uses: ./.github/workflows/qualite.yml
+    with:
+      tfvars: terraform/env/prod.tfvars
 
   # ── Pull request vers main : on planifie, on n'applique rien ───────────────
 
   plan:
     name: Plan Terraform (production)
     if: github.event_name == 'pull_request'
-    needs: [lint, test, security]
+    needs: qualite
     runs-on: ubuntu-latest
     defaults:
       run:

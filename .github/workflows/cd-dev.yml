@@ -40,56 +40,16 @@ jobs:
   # commits déjà vérifiés par ci.yml sur une éventuelle PR), mais peu coûteux,
   # et ça garantit que `develop` est vérifiée pour elle-même à l'instant du
   # déploiement.
-  verifier:
-    name: Vérifications sur develop
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: pip
-
-      - run: pip install -r requirements-dev.txt
-      - run: pytest
-
-      - uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: "~1.12"
-
-      - name: Formatage et validation Terraform
-        working-directory: terraform
-        run: |
-          terraform fmt -check -recursive
-          terraform init -backend=false -input=false
-          terraform validate
-
-      - uses: terraform-linters/setup-tflint@v4
-        with:
-          tflint_version: latest
-
-      - name: tflint
-        working-directory: terraform
-        run: |
-          tflint --init
-          tflint --recursive
-
-      - name: checkov
-        uses: bridgecrewio/checkov-action@v12
-        with:
-          directory: terraform/
-          framework: terraform
-          # var_file de DEV ici : c'est cet environnement que ce pipeline
-          # déploie (cd-prod.yml vérifie de son côté sur prod.tfvars).
-          var_file: terraform/env/dev.tfvars
-          quiet: true
-          output_format: cli
-          soft_fail: false
+  # var_file de DEV ici : c'est cet environnement que ce pipeline déploie
+  # (cd-prod.yml vérifie de son côté sur prod.tfvars).
+  qualite:
+    uses: ./.github/workflows/qualite.yml
+    with:
+      tfvars: terraform/env/dev.tfvars
 
   build:
     name: Construction de l'image
-    needs: verifier
+    needs: qualite
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

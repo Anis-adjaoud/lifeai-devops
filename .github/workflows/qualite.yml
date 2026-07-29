@@ -1,0 +1,105 @@
+name: Portes de qualité
+
+# Définition UNIQUE des portes de qualité, appelée par les trois pipelines
+# (`ci.yml`, `cd-dev.yml`, `cd-prod.yml`) via `uses:`.
+#
+# Pourquoi factoriser : ces portes étaient auparavant recopiées dans chaque
+# pipeline, avec pour consigne de rester identiques. Elles avaient déjà
+# divergé — `cd-prod.yml` ne lançait pas tflint, sans que personne le
+# remarque. Une définition unique rend ce genre d'oubli impossible.
+#
+# Pourquoi `workflow_call` et non un enchaînement `workflow_run` : un workflow
+# déclenché par `workflow_run` s'exécute toujours depuis la version du fichier
+# présente sur la branche par défaut, jamais depuis celle de la branche qui
+# l'a déclenché. Un correctif de pipeline ne serait donc testable qu'une fois
+# fusionné. `workflow_call` s'exécute sur le ref de l'appelant et conserve son
+# contexte.
+#
+# Les trois jobs tournent en parallèle et sont bloquants pour l'appelant.
+on:
+  workflow_call:
+    inputs:
+      tfvars:
+        description: >-
+          Fichier de variables passé à checkov. C'est la seule différence
+          légitime entre environnements : la moitié des ressources est
+          conditionnée par var.manage_shared_infra, et chaque pipeline doit
+          scanner l'environnement qu'il déploie.
+        required: true
+        type: string
+
+jobs:
+  lint:
+    name: Qualité Terraform
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: terraform
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~1.12"
+
+      - name: Formatage
+        run: terraform fmt -check -recursive -diff
+
+      - name: Initialisation sans backend
+        # La validation syntaxique n'a besoin d'aucun state : pas
+        # d'authentification GCP requise à ce stade.
+        run: terraform init -backend=false -input=false
+
+      - name: Validation
+        run: terraform validate
+
+      - uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: latest
+
+      - name: tflint
+        run: |
+          tflint --init
+          tflint --recursive
+
+  test:
+    name: Tests unitaires
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Dépendances de test
+        # requirements-dev.txt seulement : requirements.txt embarque torch et
+        # sentence-transformers (~2 Go), inutiles aux tests unitaires.
+        run: pip install -r requirements-dev.txt
+
+      - name: pytest
+        run: pytest
+
+  security:
+    name: Scan de sécurité IaC
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: checkov
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: terraform/
+          framework: terraform
+          # var_file est INDISPENSABLE : la moitié des ressources est
+          # conditionnée par var.manage_shared_infra, dont le défaut est false.
+          # Sans ce fichier, checkov les ignore et rend un rapport vert
+          # trompeur — mesuré : 2 contrôles sans var_file, 28 avec.
+          var_file: ${{ inputs.tfvars }}
+          quiet: true
+          output_format: cli
+          # Les constats acceptés portent un commentaire
+          # `#checkov:skip=<ID>:<raison>` dans les .tf : aucune exception n'est
+          # muette, et tout NOUVEAU constat fait échouer le job.
+          soft_fail: false
