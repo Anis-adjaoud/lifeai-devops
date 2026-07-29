@@ -15,22 +15,15 @@ name: CD · déploiement production
 # l'applique tel quel (`terraform apply tfplan`). Ce qui a été revu dans la PR
 # est donc, au bit près, ce qui est appliqué en production — sans nouveau
 # calcul, sans nouvelle image reconstruite.
+#
+# Pas de filtre `paths:` non plus (même raison que dans cd-dev.yml) : une
+# fusion dans `main` doit TOUJOURS déclencher ce pipeline, sinon `main` cesse
+# de refléter la production sans que rien ne le signale. Si la PR ne changeait
+# rien d'infrastructurel, le plan appliqué est un no-op et le job coûte une
+# minute.
 on:
   push:
     branches: [main]
-    paths:
-      - "api.py"
-      - "agentic/**"
-      - "nutrition/**"
-      - "frontend_web/**"
-      - "data/foods_table.xlsx"
-      - "output/models/**"
-      - "tests/**"
-      - "Dockerfile"
-      - "requirements.txt"
-      - "requirements-dev.txt"
-      - "terraform/**"
-      - ".github/workflows/**"
 
   # Permet de redéployer `main` à l'identique après un incident, sans
   # nouveau commit.
@@ -123,6 +116,21 @@ jobs:
           service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
 
       - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Vérifier que l'image du commit fusionné existe
+        # Sans ce garde-fou, l'absence d'image se manifeste par un
+        # « NOT_FOUND: Requested entity was not found » de gcloud, qui ne dit
+        # ni quelle entité manque, ni pourquoi. Le plan Terraform référence
+        # exactement ce tag : si l'image n'est pas là, autant s'arrêter ici
+        # plutôt que d'échouer plus tard sur une révision Cloud Run impossible
+        # à démarrer.
+        run: |
+          if ! gcloud artifacts docker images describe \
+              "${{ env.IMAGE }}:${{ needs.resolve-pr.outputs.head_sha }}" >/dev/null 2>&1; then
+            echo "::error::Aucune image pour le commit ${{ needs.resolve-pr.outputs.head_sha }} (head de la PR #${{ needs.resolve-pr.outputs.pr_number }}) dans Artifact Registry."
+            echo "::error::cd-dev.yml n'a donc pas tourné sur ce commit de develop. Relancer cd-dev.yml sur ce SHA, puis relancer ce pipeline."
+            exit 1
+          fi
 
       # Build once, deploy everywhere : l'image a déjà été construite et
       # poussée par cd-dev.yml quand ce commit (le head de la PR) a été
