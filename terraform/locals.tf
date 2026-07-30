@@ -38,5 +38,6 @@ locals {
     environment = var.environment
     application = "lifeai"
     managed_by  = "terraform"
+    name        = "lifeai-tag"
   }
 }
